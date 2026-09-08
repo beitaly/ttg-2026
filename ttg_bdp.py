@@ -113,27 +113,30 @@ async def login(page):
         log.error(f"Failed to load login page: {e}")
         raise
 
-    # Dismiss any overlays by pressing Escape first
-    await page.keyboard.press("Escape")
+    # Dismiss cookie modal - check all three boxes then confirm
     await page.wait_for_timeout(500)
-
-    # Try to click any cookie/accept button without waiting long
-    for sel in [
-        "button:has-text('ACCEPT ALL')",
-        "button:has-text('Accetta')",
-        "button:has-text('Accept')",
-        "button:has-text('OK')",
-        "#cookieConfirm",
-        ".cookie-btn",
-    ]:
+    for cb_id in ["cookieAccept_183551", "cookieAccept_190946", "cookieAccept_191064"]:
         try:
-            await page.click(sel, timeout=1500)
-            log.info(f"Cookie dismissed: {sel}")
+            await page.evaluate(f'document.getElementById("{cb_id}").click()')
+            log.info(f"Ticked: {cb_id}")
+            await page.wait_for_timeout(200)
+        except Exception as e:
+            log.info(f"Checkbox {cb_id}: {e}")
+
+    # Now click confirm/save
+    for sel in ["button:has-text('ACCEPT ALL')", "button:has-text('Save')",
+                "button:has-text('Confirm')", "button:has-text('Conferma')",
+                "button:has-text('Salva')", "button:has-text('OK')",
+                "button:has-text('Accetta')", ".save-btn", "#cookieSave"]:
+        try:
+            await page.click(sel, timeout=2000)
+            log.info(f"Cookie confirmed: {sel}")
             break
         except Exception:
             pass
 
-    await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(1500)
+    log.info("Cookie handling complete")
 
     # Log all inputs now visible
     inputs = await page.query_selector_all("input")
