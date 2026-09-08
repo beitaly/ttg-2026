@@ -126,9 +126,6 @@ def write_log(wave, variant_idx, segment, buyer_id, buyer_name,
 # ── Login ─────────────────────────────────────────────────────────────────────
 async def login(page):
     log.info("Setting cookie consent before navigating...")
-
-    # Pre-set the cc_cookie consent cookie so the modal never renders
-    # This mimics a user who has already accepted cookies
     await page.context.add_cookies([{
         "name": "cc_cookie",
         "value": '{"level":["necessary","analytics","marketing"],"revision":0,"data":null,"rfc_cookie":false}',
@@ -143,20 +140,21 @@ async def login(page):
     await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
     log.info(f"Login page loaded: {page.url}")
 
-    # The login form fields are confirmed:
-    # input[name='userid'] and input[name='password']
-    # Wait for them to be ready
-    await page.wait_for_selector("input[name='userid']", timeout=10000)
-    log.info("Login form ready")
+    # Field exists in DOM but may be hidden behind overlay — use JS to fill directly
+    await page.evaluate(f"""() => {{
+        const uid = document.querySelector("input[name='userid']");
+        const pwd = document.querySelector("input[name='password']");
+        if (uid) {{ uid.value = "{CREDENTIALS['email']}"; }}
+        if (pwd) {{ pwd.value = "{CREDENTIALS['password']}"; }}
+    }}""")
+    log.info("Credentials injected via JS")
 
-    await page.fill("input[name='userid']", CREDENTIALS["email"])
-    log.info("Email filled")
-
-    await page.fill("input[name='password']", CREDENTIALS["password"])
-    log.info("Password filled")
-
-    await page.click("button[type='submit']")
-    log.info("Submit clicked")
+    # Submit the form directly via JS
+    await page.evaluate("""() => {
+        const form = document.querySelector("form");
+        if (form) { form.submit(); }
+    }""")
+    log.info("Form submitted via JS")
 
     await page.wait_for_url("**/default**", timeout=15000)
     log.info(f"Login successful: {page.url}")
