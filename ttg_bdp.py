@@ -104,17 +104,65 @@ def write_log(wave, variant_idx, segment, buyer_id, buyer_name,
 
 
 async def login(page):
-    log.info("Logging in...")
-    await page.goto(LOGIN_URL, wait_until="networkidle")
+    log.info("Navigating to login page...")
+    try:
+        await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
+        log.info(f"Login page loaded: {page.url}")
+    except Exception as e:
+        log.error(f"Failed to load login page: {e}")
+        raise
+
     try:
         await page.click("button:has-text('ACCEPT ALL')", timeout=3000)
+        log.info("Cookies accepted")
     except PlaywrightTimeout:
-        pass
-    await page.fill("input[name='userid']", CREDENTIALS["email"])
-    await page.fill("input[name='password']", CREDENTIALS["password"])
-    await page.click("button[type='submit'], input[type='submit']")
-    await page.wait_for_url("**/default**", timeout=15000)
-    log.info("Login successful.")
+        log.info("No cookie banner found")
+
+    # Log all inputs for debugging
+    inputs = await page.query_selector_all("input")
+    for inp in inputs:
+        name = await inp.get_attribute("name")
+        type_ = await inp.get_attribute("type")
+        id_ = await inp.get_attribute("id")
+        log.info(f"Input found: name={name} type={type_} id={id_}")
+
+    for sel in ["input[name='userid']","input[name='email']","input[type='email']","input[name='username']","input[id='userid']"]:
+        try:
+            await page.fill(sel, CREDENTIALS["email"])
+            log.info(f"Email filled: {sel}")
+            break
+        except Exception:
+            continue
+    else:
+        log.error("Email field not found")
+        raise Exception("Email field not found")
+
+    for sel in ["input[name='password']","input[type='password']","input[id='password']"]:
+        try:
+            await page.fill(sel, CREDENTIALS["password"])
+            log.info(f"Password filled: {sel}")
+            break
+        except Exception:
+            continue
+    else:
+        log.error("Password field not found")
+        raise Exception("Password field not found")
+
+    for sel in ["button[type=\'submit\']","input[type=\'submit\']","button:has-text(\'Login\')","button:has-text(\'Accedi\')"]:
+        try:
+            await page.click(sel)
+            log.info(f"Submit clicked: {sel}")
+            break
+        except Exception:
+            continue
+
+    try:
+        await page.wait_for_url("**/default**", timeout=15000)
+        log.info(f"Login successful: {page.url}")
+    except PlaywrightTimeout:
+        log.error(f"Login failed. URL: {page.url}")
+        await page.screenshot(path="login_debug_bdp.png")
+        raise
 
 
 async def scrape_buyers_by_segment(page):
