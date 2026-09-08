@@ -115,26 +115,32 @@ async def login(page):
         "secure": False,
         "sameSite": "Lax"
     }])
-    log.info("Cookie consent pre-set")
 
     await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
     log.info(f"Login page loaded: {page.url}")
 
-    # Field exists in DOM but may be hidden behind overlay — use JS to fill directly
+    # Inject credentials into the login form fields
     await page.evaluate(f"""() => {{
         const uid = document.querySelector("input[name='userid']");
         const pwd = document.querySelector("input[name='password']");
-        if (uid) {{ uid.value = "{CREDENTIALS['email']}"; }}
-        if (pwd) {{ pwd.value = "{CREDENTIALS['password']}"; }}
+        if (uid) uid.value = {repr(CREDENTIALS['email'])};
+        if (pwd) pwd.value = {repr(CREDENTIALS['password'])};
     }}""")
-    log.info("Credentials injected via JS")
+    log.info("Credentials injected")
 
-    # Submit the form directly via JS
+    # Submit the login form — target by its submit button class, not querySelector('form')
+    # The login form has a submit button with class btn-primary
     await page.evaluate("""() => {
-        const form = document.querySelector("form");
-        if (form) { form.submit(); }
+        const btn = document.querySelector("button[type='submit'].btn-primary, .login-form button[type='submit']");
+        if (btn) {
+            btn.click();
+        } else {
+            // fallback: find form containing userid field
+            const uid = document.querySelector("input[name='userid']");
+            if (uid && uid.form) uid.form.submit();
+        }
     }""")
-    log.info("Form submitted via JS")
+    log.info("Login form submitted")
 
     await page.wait_for_url("**/default**", timeout=15000)
     log.info(f"Login successful: {page.url}")
