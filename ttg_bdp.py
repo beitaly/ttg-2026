@@ -106,10 +106,20 @@ def write_log(wave, variant_idx, segment, buyer_id, buyer_name,
 
 async def login(page):
     log.info("Navigating to login page...")
-    await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+    await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
     log.info(f"Login page loaded: {page.url}")
 
-    # Nuclear cookie dismiss — hide everything cookie-related via JS
+    # Wait for the login form to actually render (JS-injected)
+    try:
+        await page.wait_for_selector("form", timeout=10000)
+        log.info("Form found")
+    except PlaywrightTimeout:
+        log.warning("No form found after 10s")
+
+    # Wait a bit more for JS to finish rendering
+    await page.wait_for_timeout(2000)
+
+    # Hide cookie overlays
     await page.evaluate("""() => {
         document.querySelectorAll(
             '[id*=cookie],[class*=cookie],[id*=Cookie],[class*=Cookie],' +
@@ -118,13 +128,10 @@ async def login(page):
         ).forEach(el => {
             el.style.display = 'none';
             el.style.visibility = 'hidden';
-            el.style.opacity = '0';
             el.style.pointerEvents = 'none';
         });
         document.body.style.overflow = 'auto';
-        document.documentElement.style.overflow = 'auto';
     }""")
-    await page.wait_for_timeout(500)
 
     # Log ALL inputs now visible
     inputs = await page.query_selector_all("input")
@@ -134,71 +141,49 @@ async def login(page):
         id_   = await inp.get_attribute("id")
         log.info(f"Input: name={name} type={type_} id={id_}")
 
-    if len(inputs) <= 4:
-        # Still only seeing cookie inputs — dump HTML to diagnose
-        html = await page.content()
-        log.info(f"HTML DUMP: {html[2000:4000]}")
-
-    # Fill email directly by JS if normal fill fails
+    # Fill email
     filled = False
     for sel in ["input[name='userid']","input[name='email']","input[type='email']",
                 "input[name='username']","input[id='userid']","input[id='email']",
                 "input[name='user']","input[name='login']"]:
         try:
-            el = await page.query_selector(sel)
-            if el:
-                await page.evaluate(f"""(el) => {{
-                    el.style.display = 'block';
-                    el.style.visibility = 'visible';
-                    el.removeAttribute('disabled');
-                    el.removeAttribute('readonly');
-                }}""", el)
-                await page.fill(sel, CREDENTIALS["email"])
-                log.info(f"Email filled: {sel}")
-                filled = True
-                break
-        except Exception as e:
-            log.info(f"Tried {sel}: {e}")
+            await page.fill(sel, CREDENTIALS["email"])
+            log.info(f"Email filled: {sel}")
+            filled = True
+            break
+        except Exception:
+            pass
     if not filled:
-        log.error("Email field not found")
+        log.error("Email field not found — dumping full HTML")
+        html = await page.content()
+        # Find form-related HTML
+        idx = html.find('<form')
+        log.info(f"FORM HTML: {html[idx:idx+1000] if idx > -1 else 'NO FORM FOUND'}")
         raise Exception("Email field not found")
 
     # Fill password
     filled = False
     for sel in ["input[name='password']","input[type='password']","input[id='password']"]:
         try:
-            el = await page.query_selector(sel)
-            if el:
-                await page.evaluate("""(el) => {
-                    el.style.display = 'block';
-                    el.style.visibility = 'visible';
-                    el.removeAttribute('disabled');
-                }""", el)
-                await page.fill(sel, CREDENTIALS["password"])
-                log.info(f"Password filled: {sel}")
-                filled = True
-                break
-        except Exception as e:
-            log.info(f"Tried {sel}: {e}")
-    if not filled:
-        raise Exception("Password field not found")
-
-    # Submit via JS if button is blocked
-    submitted = False
-    for sel in ["button[type='submit']","input[type='submit']",
-                "button:has-text('Login')","button:has-text('Accedi')",
-                "button:has-text('Entra')"]:
-        try:
-            await page.click(sel, timeout=3000, force=True)
-            log.info(f"Submit clicked: {sel}")
-            submitted = True
+            await page.fill(sel, CREDENTIALS["password"])
+            log.info(f"Password filled: {sel}")
+            filled = True
             break
         except Exception:
             pass
-    if not submitted:
-        # Try JS form submit as last resort
-        await page.evaluate("document.querySelector('form').submit()")
-        log.info("Form submitted via JS")
+    if not filled:
+        raise Exception("Password field not found")
+
+    # Submit
+    for sel in ["button[type='submit']","input[type='submit']",
+                "button:has-text('Login')","button:has-text('Accedi')",
+                "button:has-text('Entra')","button:has-text('Sign in')"]:
+        try:
+            await page.click(sel, timeout=3000, force=True)
+            log.info(f"Submit clicked: {sel}")
+            break
+        except Exception:
+            pass
 
     try:
         await page.wait_for_url("**/default**", timeout=15000)
