@@ -119,7 +119,6 @@ async def login(page):
     await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
     log.info(f"Login page loaded: {page.url}")
 
-    # Inject credentials into the login form fields
     await page.evaluate(f"""() => {{
         const uid = document.querySelector("input[name='userid']");
         const pwd = document.querySelector("input[name='password']");
@@ -128,22 +127,35 @@ async def login(page):
     }}""")
     log.info("Credentials injected")
 
-    # Submit the login form — target by its submit button class, not querySelector('form')
-    # The login form has a submit button with class btn-primary
     await page.evaluate("""() => {
         const btn = document.querySelector("button[type='submit'].btn-primary, .login-form button[type='submit']");
         if (btn) {
             btn.click();
         } else {
-            // fallback: find form containing userid field
             const uid = document.querySelector("input[name='userid']");
             if (uid && uid.form) uid.form.submit();
         }
     }""")
-    log.info("Login form submitted")
+    log.info("Login form submitted — waiting for navigation...")
 
-    await page.wait_for_url("**/default**", timeout=15000)
-    log.info(f"Login successful: {page.url}")
+    # Wait for ANY navigation, then check where we ended up
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        pass
+    
+    current_url = page.url
+    log.info(f"Current URL after submit: {current_url}")
+    
+    if "default" in current_url or "welcome" in current_url or "agenda" in current_url:
+        log.info("Login successful!")
+    elif "login" in current_url:
+        # Still on login page — check for error message
+        error_text = await page.evaluate("() => document.body.innerText.substring(0, 500)")
+        log.error(f"Login failed. Page text: {error_text}")
+        raise Exception("Login failed — check credentials")
+    else:
+        log.info(f"Unknown redirect: {current_url} — proceeding anyway")
 
 async def scrape_buyers_by_segment(page):
     all_buyers = []
