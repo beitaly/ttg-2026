@@ -5,6 +5,8 @@ Same structure as BHI v2 but with BDP credentials and messages.
 """
 
 import asyncio
+import sys
+os.environ["PYTHONUNBUFFERED"] = "1"
 import csv
 import logging
 import os
@@ -76,7 +78,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler("ttg_bdp_script.log"),
-        logging.StreamHandler(),
+        logging.StreamHandler(sys.stdout),
     ]
 )
 log = logging.getLogger("BDP")

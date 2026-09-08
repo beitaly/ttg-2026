@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
-# build v4
+# build v5
+ENV PYTHONUNBUFFERED=1
+
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -35,4 +37,4 @@ RUN playwright install chromium
 
 COPY . .
 
-CMD ["sh", "-c", "python ttg_bhi.py & python ttg_bdp.py & wait"]
+CMD ["sh", "-c", "python -u ttg_bhi.py & python -u ttg_bdp.py & wait"]

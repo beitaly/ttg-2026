@@ -9,6 +9,8 @@ Runs until Oct 8 10:00 CET, daily waves, variant cycling.
 """
 
 import asyncio
+import sys
+os.environ["PYTHONUNBUFFERED"] = "1"
 import csv
 import logging
 import os
@@ -95,7 +97,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler("ttg_bhi_script.log"),
-        logging.StreamHandler(),
+        logging.StreamHandler(sys.stdout),
     ]
 )
 log = logging.getLogger("BHI")
