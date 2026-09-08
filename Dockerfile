@@ -1,6 +1,5 @@
 FROM python:3.11-slim
 
-# Install base tools needed by playwright install-deps
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -15,5 +14,4 @@ RUN playwright install-deps chromium
 
 COPY . .
 
-# Run both scripts simultaneously
-CMD python ttg_bhi.py & python ttg_bdp.py & wait
+CMD ["sh", "-c", "python ttg_bhi.py & python ttg_bdp.py & wait"]
