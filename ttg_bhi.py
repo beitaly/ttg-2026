@@ -135,184 +135,119 @@ async def login(page):
     log.info("Login successful")
 
 async def scrape_buyers_by_segment(page):
-    """
-    Scrape all buyers, organised by segment priority.
-    Returns list of dicts with segment and message_variant pre-assigned.
-    Deduplicates so each buyer appears only once (first/highest priority segment wins).
-    """
     all_buyers = []
-    seen_ids = set()
+    seen_ids   = set()
 
     for seg_label, categoria_val, msg_idx in SEGMENT_CATEGORIES:
-        log.info(f"Scraping segment: {seg_label} (categoria={categoria_val})")
-        seg_buyers = []
+        log.info(f"Scraping: {seg_label} (categoria={categoria_val})")
+        seg_count = 0
 
         for letter in LETTERS:
-            url = (f"{BUYER_URL}?ragione_sociale_iniziale={letter}"
-                   f"&categoria={categoria_val}&submit=1")
-            try:
-                await page.goto(url, wait_until="networkidle", timeout=20000)
-            except PlaywrightTimeout:
-                log.warning(f"  Timeout on {letter}, skipping")
-                continue
-
-            # Extract buyer cards/rows from results
-            # The page shows results in a table or card list after search
-            entries = await page.query_selector_all(
-                "table.risultati tbody tr, "
-                ".risultati .risultato, "
-                ".search-results tr[data-id], "
-                "tr.buyer-row, "
-                ".scheda-breve"
-            )
-
-            if not entries:
-                # Try generic table rows (skip header)
-                entries = await page.query_selector_all("table tbody tr:not(:first-child)")
-
-            for entry in entries:
+            page_num = 1
+            while True:
+                url = (f"{BASE_URL}/ttg26/en/ricerca-buyer"
+                       f"?ragione_sociale_iniziale={letter}"
+                       f"&categoria={categoria_val}&submit=1&page={page_num}")
                 try:
-                    # Get profile link — the key to identifying each buyer
-                    link = await entry.query_selector(
-                        "a[href*='/ttg26/en/ricerca-buyer/'], "
-                        "a[href*='/scheda/'], "
-                        "a.btn-appuntamento, "
-                        "a[href*='slot']"
-                    )
-                    if not link:
-                        # Try any link in the row
-                        link = await entry.query_selector("a[href]")
-
-                    href = await link.get_attribute("href") if link else ""
-                    profile_url = (BASE_URL + href
-                                   if href and href.startswith("/") else href or "")
-
-                    # Extract buyer ID from URL
-                    buyer_id = ""
-                    m = re.search(r"/(\d+)/?(?:\?|$)", href or "")
-                    if m:
-                        buyer_id = m.group(1)
-
-                    # Skip if already captured from higher priority segment
-                    uid = buyer_id or profile_url
-                    if not uid or uid in seen_ids:
-                        continue
-
-                    # Extract name, company, country from cells
-                    cells = await entry.query_selector_all("td")
-                    texts = []
-                    for cell in cells:
-                        t = (await cell.inner_text()).strip()
-                        if t:
-                            texts.append(t)
-
-                    company = texts[0] if len(texts) > 0 else ""
-                    country = texts[1] if len(texts) > 1 else ""
-                    name    = texts[2] if len(texts) > 2 else company
-
-                    # Also try named selectors
-                    name_el = await entry.query_selector(".nome, .referente, .contact-name")
-                    if name_el:
-                        name = (await name_el.inner_text()).strip()
-
-                    co_el = await entry.query_selector(".ragione-sociale, .company, .azienda")
-                    if co_el:
-                        company = (await co_el.inner_text()).strip()
-
-                    seen_ids.add(uid)
-                    seg_buyers.append({
-                        "id":            buyer_id,
-                        "name":          name,
-                        "company":       company,
-                        "country":       country,
-                        "profile_url":   profile_url,
-                        "segment":       seg_label,
-                        "msg_variant":   msg_idx,
-                    })
-
+                    await page.goto(url, wait_until="networkidle", timeout=20000)
                 except Exception as e:
-                    log.debug(f"  Entry parse error: {e}")
+                    log.warning(f"  Timeout {letter} p{page_num}: {e}")
+                    break
 
-            log.info(f"  {letter}: {len(seg_buyers)} total in {seg_label} so far")
-            await asyncio.sleep(0.5)  # polite pause between letters
+                # Confirmed selector from live page HTML
+                entries = await page.query_selector_all("li.search-result")
+                if not entries:
+                    break
 
-        log.info(f"Segment '{seg_label}': {len(seg_buyers)} unique buyers")
-        all_buyers.extend(seg_buyers)
+                for entry in entries:
+                    try:
+                        link = await entry.query_selector("h4 a[href*='agenda-appuntamenti']")
+                        if not link:
+                            continue
+                        href    = await link.get_attribute("href")
+                        company = (await link.inner_text()).strip()
+                        # Extract user ID: /ttg26/en/agenda-appuntamenti?user=12345
+                        uid_match = re.search("user=([0-9]+)", href or "")
+                        buyer_id  = uid_match.group(1) if uid_match else ""
+                        if not buyer_id or buyer_id in seen_ids:
+                            continue
+                        country_el = await entry.query_selector("p.risultati-info span")
+                        country = (await country_el.inner_text()).strip() if country_el else ""
+                        seen_ids.add(buyer_id)
+                        seg_count += 1
+                        all_buyers.append({
+                            "id": buyer_id, "name": company, "company": company,
+                            "country": country,
+                            "appt_url": BASE_URL + href,
+                            "segment": seg_label, "msg_variant": msg_idx,
+                        })
+                    except Exception as e:
+                        log.debug(f"Entry parse error: {e}")
 
-    # Final dedup pass (in case of overlap between segment scrapes)
+                # Pagination
+                next_link = await page.query_selector("ul.pagination li.last a")
+                if next_link:
+                    next_href = await next_link.get_attribute("href") or ""
+                    if "page=" + str(page_num) in next_href:
+                        break
+                    page_num += 1
+                else:
+                    break
+                await asyncio.sleep(0.3)
+
+            log.info(f"  {letter}: {seg_count} in {seg_label}")
+            await asyncio.sleep(0.3)
+
+        log.info(f"Segment '{seg_label}': {seg_count} buyers")
+
     final, seen2 = [], set()
     for b in all_buyers:
-        uid = b["id"] or b["profile_url"]
-        if uid not in seen2:
-            seen2.add(uid)
+        if b["id"] not in seen2:
+            seen2.add(b["id"])
             final.append(b)
-
     log.info(f"Total unique buyers: {len(final)}")
     return final
 
 
-# ── Send appointment request ──────────────────────────────────────────────────
 async def send_request(page, buyer, message_text):
-    """
-    Navigate to buyer profile and send a meeting request.
-    Uses the slot-aware URL from the diary → ricerca-slot-libero-ajax flow.
-    """
     try:
-        # Navigate to buyer profile/search result
-        if buyer["profile_url"]:
-            target = buyer["profile_url"]
-        else:
-            target = f"{BUYER_URL}/{buyer['id']}"
-
+        target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
         await page.goto(target, wait_until="networkidle", timeout=15000)
 
-        # Look for appointment request button
-        # In ARE: usually "Richiedi appuntamento" or similar
         btn = await page.query_selector(
-            "a.btn-appuntamento, "
-            "button.btn-appuntamento, "
-            "a[href*='ricerca-slot-libero'], "
-            "a[href*='appuntamento'], "
-            "button:has-text('appointment'), "
-            "a:has-text('appointment'), "
-            "a:has-text('Richiedi'), "
-            "button:has-text('Richiedi')"
+            "a.btn-appuntamento, button.btn-appuntamento, "
+            "a[href*='ricerca-slot-libero'], a[href*='appuntamento'], "
+            "button:has-text('Request'), a:has-text('Request'), "
+            "button:has-text('Richiedi'), a:has-text('Richiedi')"
         )
-
         if not btn:
             return "no_appt_button"
 
         await btn.click()
         await page.wait_for_load_state("networkidle", timeout=10000)
 
-        # Fill message textarea
         msg_area = await page.query_selector("textarea[name='msg'], textarea.form-control")
         if msg_area:
             await msg_area.fill(message_text)
 
-        # Submit
         submit = await page.query_selector(
-            "button[data-action='appuntamento'], "
-            "button:has-text('Confirm'), "
-            "button:has-text('Send'), "
-            "input[type='submit'], "
-            "button[type='submit']:not([data-action='rifiuta']):not([data-action='libera'])"
+            "button[data-action='appuntamento'], button:has-text('Confirm'), "
+            "button:has-text('Send'), input[type='submit'], "
+            "button[type='submit']:not([data-action='rifiuta'])"
         )
         if submit:
             await submit.click()
             await page.wait_for_load_state("networkidle", timeout=10000)
             return "sent"
-        else:
-            return "no_submit_button"
+        return "no_submit"
 
     except PlaywrightTimeout:
         return "timeout"
     except Exception as e:
         log.error(f"Error for {buyer.get('company','?')}: {e}")
-        return f"error"
+        return "error"
 
 
-# ── Wave runner ───────────────────────────────────────────────────────────────
 async def run_wave(page, buyers, wave_number):
     """Cycle through message variants based on wave number, send to all buyers."""
     # Each buyer has a preferred variant; wave number shifts all variants by (wave-1)%4
