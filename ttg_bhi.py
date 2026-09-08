@@ -20,11 +20,10 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-BASE_URL  = "https://www.ttgexpo.it"
-LOGIN_URL = f"{BASE_URL}/ttg26/en/login"
+BASE_URL  = "https://bme.iegexpo.it"
+LOGIN_URL = "https://bme.iegexpo.it/ttg26/en/login"
 BUYER_URL = f"{BASE_URL}/ttg26/en/ricerca-buyer"
 
-# Credentials loaded from Railway environment variables (set in Railway dashboard)
 CREDENTIALS = {
     "email":    os.environ.get("BHI_EMAIL", "info@bestholidaysinitaly.com"),
     "password": os.environ.get("BHI_PASSWORD", ""),
@@ -125,57 +124,15 @@ def write_log(wave, variant_idx, segment, buyer_id, buyer_name,
 
 # ── Login ─────────────────────────────────────────────────────────────────────
 async def login(page):
-    log.info("Setting cookie consent before navigating...")
-    await page.context.add_cookies([{
-        "name": "cc_cookie",
-        "value": '{"level":["necessary","analytics","marketing"],"revision":0,"data":null,"rfc_cookie":false}',
-        "domain": "www.ttgexpo.it",
-        "path": "/",
-        "httpOnly": False,
-        "secure": False,
-        "sameSite": "Lax"
-    }])
-
-    await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
-    log.info(f"Login page loaded: {page.url}")
-
-    await page.evaluate(f"""() => {{
-        const uid = document.querySelector("input[name='userid']");
-        const pwd = document.querySelector("input[name='password']");
-        if (uid) uid.value = {repr(CREDENTIALS['email'])};
-        if (pwd) pwd.value = {repr(CREDENTIALS['password'])};
-    }}""")
-    log.info("Credentials injected")
-
-    await page.evaluate("""() => {
-        const btn = document.querySelector("button[type='submit'].btn-primary, .login-form button[type='submit']");
-        if (btn) {
-            btn.click();
-        } else {
-            const uid = document.querySelector("input[name='userid']");
-            if (uid && uid.form) uid.form.submit();
-        }
-    }""")
-    log.info("Login form submitted — waiting for navigation...")
-
-    # Wait for ANY navigation, then check where we ended up
-    try:
-        await page.wait_for_load_state("networkidle", timeout=15000)
-    except Exception:
-        pass
-    
-    current_url = page.url
-    log.info(f"Current URL after submit: {current_url}")
-    
-    if "default" in current_url or "welcome" in current_url or "agenda" in current_url:
-        log.info("Login successful!")
-    elif "login" in current_url:
-        # Still on login page — check for error message
-        error_text = await page.evaluate("() => document.body.innerText.substring(0, 500)")
-        log.error(f"Login failed. Page text: {error_text}")
-        raise Exception("Login failed — check credentials")
-    else:
-        log.info(f"Unknown redirect: {current_url} — proceeding anyway")
+    log.info("Logging in via autologin URL...")
+    autologin_url = os.environ.get("BHI_AUTOLOGIN_URL", "")
+    if not autologin_url:
+        raise Exception("BHI_AUTOLOGIN_URL environment variable not set")
+    await page.goto(autologin_url, wait_until="networkidle", timeout=30000)
+    log.info(f"Post-autologin URL: {page.url}")
+    if "login" in page.url and "autologin" not in page.url:
+        raise Exception(f"Autologin failed — still on login page: {page.url}")
+    log.info("Login successful")
 
 async def scrape_buyers_by_segment(page):
     """
