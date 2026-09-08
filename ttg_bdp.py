@@ -192,33 +192,43 @@ async def scrape_buyers_by_segment(page):
 async def send_request(page, buyer, message_text):
     try:
         target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
-        await page.goto(target, wait_until="networkidle", timeout=15000)
+        await page.goto(target, wait_until="domcontentloaded", timeout=20000)
 
-        btn = await page.query_selector(
-            "a.btn-appuntamento, button.btn-appuntamento, "
-            "a[href*='ricerca-slot-libero'], a[href*='appuntamento'], "
-            "button:has-text('Request'), a:has-text('Request'), "
-            "button:has-text('Richiedi'), a:has-text('Richiedi')"
-        )
-        if not btn:
-            return "no_appt_button"
+        # Wait for FullCalendar to render — wait for ANY fc-event to appear
+        try:
+            await page.wait_for_selector("div.fc-event", timeout=12000)
+        except PlaywrightTimeout:
+            return "no_calendar"
 
-        await btn.click()
-        await page.wait_for_load_state("networkidle", timeout=10000)
+        # Now look for a free slot
+        free_slot = await page.query_selector("div.fc-event.stato-libero")
+        if not free_slot:
+            return "no_free_slot"
 
-        msg_area = await page.query_selector("textarea[name='msg'], textarea.form-control")
+        await free_slot.click()
+
+        # Wait for modal to appear
+        try:
+            await page.wait_for_selector("textarea, .fancybox-inner", timeout=5000)
+        except PlaywrightTimeout:
+            return "no_modal"
+
+        # Fill message
+        msg_area = await page.query_selector("textarea, .fancybox-inner textarea")
         if msg_area:
             await msg_area.fill(message_text)
 
+        # Click submit
         submit = await page.query_selector(
-            "button[data-action='appuntamento'], button:has-text('Confirm'), "
-            "button:has-text('Send'), input[type='submit'], "
-            "button[type='submit']:not([data-action='rifiuta'])"
+            "button:has-text('Request an appointment'), "
+            "button:has-text('Richiedi un appuntamento'), "
+            "button.btn-primary"
         )
         if submit:
             await submit.click()
-            await page.wait_for_load_state("networkidle", timeout=10000)
+            await page.wait_for_timeout(800)
             return "sent"
+
         return "no_submit"
 
     except PlaywrightTimeout:
