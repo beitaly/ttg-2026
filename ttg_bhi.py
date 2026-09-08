@@ -126,39 +126,27 @@ def write_log(wave, variant_idx, segment, buyer_id, buyer_name,
 # ── Login ─────────────────────────────────────────────────────────────────────
 async def login(page):
     log.info("Navigating to login page...")
-    try:
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
-        log.info(f"Login page loaded: {page.url}")
-    except Exception as e:
-        log.error(f"Failed to load login page: {e}")
-        raise
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+    log.info(f"Login page loaded: {page.url}")
 
-    # Dismiss cookie modal - check all three boxes then confirm
+    # Nuclear cookie dismiss — hide everything cookie-related via JS
+    await page.evaluate("""() => {
+        document.querySelectorAll(
+            '[id*=cookie],[class*=cookie],[id*=Cookie],[class*=Cookie],' +
+            '[id*=gdpr],[class*=gdpr],[id*=consent],[class*=consent],' +
+            '.modal-backdrop,.overlay,#overlay'
+        ).forEach(el => {
+            el.style.display = 'none';
+            el.style.visibility = 'hidden';
+            el.style.opacity = '0';
+            el.style.pointerEvents = 'none';
+        });
+        document.body.style.overflow = 'auto';
+        document.documentElement.style.overflow = 'auto';
+    }""")
     await page.wait_for_timeout(500)
-    for cb_id in ["cookieAccept_183551", "cookieAccept_190946", "cookieAccept_191064"]:
-        try:
-            await page.evaluate(f'document.getElementById("{cb_id}").click()')
-            log.info(f"Ticked: {cb_id}")
-            await page.wait_for_timeout(200)
-        except Exception as e:
-            log.info(f"Checkbox {cb_id}: {e}")
 
-    # Now click confirm/save
-    for sel in ["button:has-text('ACCEPT ALL')", "button:has-text('Save')",
-                "button:has-text('Confirm')", "button:has-text('Conferma')",
-                "button:has-text('Salva')", "button:has-text('OK')",
-                "button:has-text('Accetta')", ".save-btn", "#cookieSave"]:
-        try:
-            await page.click(sel, timeout=2000)
-            log.info(f"Cookie confirmed: {sel}")
-            break
-        except Exception:
-            pass
-
-    await page.wait_for_timeout(1500)
-    log.info("Cookie handling complete")
-
-    # Log all inputs now visible
+    # Log ALL inputs now visible
     inputs = await page.query_selector_all("input")
     for inp in inputs:
         name = await inp.get_attribute("name")
@@ -166,17 +154,31 @@ async def login(page):
         id_   = await inp.get_attribute("id")
         log.info(f"Input: name={name} type={type_} id={id_}")
 
-    # Fill email
+    if len(inputs) <= 4:
+        # Still only seeing cookie inputs — dump HTML to diagnose
+        html = await page.content()
+        log.info(f"HTML DUMP: {html[2000:4000]}")
+
+    # Fill email directly by JS if normal fill fails
     filled = False
     for sel in ["input[name='userid']","input[name='email']","input[type='email']",
-                "input[name='username']","input[id='userid']","input[id='email']"]:
+                "input[name='username']","input[id='userid']","input[id='email']",
+                "input[name='user']","input[name='login']"]:
         try:
-            await page.fill(sel, CREDENTIALS["email"])
-            log.info(f"Email filled: {sel}")
-            filled = True
-            break
-        except Exception:
-            pass
+            el = await page.query_selector(sel)
+            if el:
+                await page.evaluate(f"""(el) => {{
+                    el.style.display = 'block';
+                    el.style.visibility = 'visible';
+                    el.removeAttribute('disabled');
+                    el.removeAttribute('readonly');
+                }}""", el)
+                await page.fill(sel, CREDENTIALS["email"])
+                log.info(f"Email filled: {sel}")
+                filled = True
+                break
+        except Exception as e:
+            log.info(f"Tried {sel}: {e}")
     if not filled:
         log.error("Email field not found")
         raise Exception("Email field not found")
@@ -185,33 +187,44 @@ async def login(page):
     filled = False
     for sel in ["input[name='password']","input[type='password']","input[id='password']"]:
         try:
-            await page.fill(sel, CREDENTIALS["password"])
-            log.info(f"Password filled: {sel}")
-            filled = True
-            break
-        except Exception:
-            pass
+            el = await page.query_selector(sel)
+            if el:
+                await page.evaluate("""(el) => {
+                    el.style.display = 'block';
+                    el.style.visibility = 'visible';
+                    el.removeAttribute('disabled');
+                }""", el)
+                await page.fill(sel, CREDENTIALS["password"])
+                log.info(f"Password filled: {sel}")
+                filled = True
+                break
+        except Exception as e:
+            log.info(f"Tried {sel}: {e}")
     if not filled:
-        log.error("Password field not found")
         raise Exception("Password field not found")
 
-    # Submit
+    # Submit via JS if button is blocked
+    submitted = False
     for sel in ["button[type='submit']","input[type='submit']",
                 "button:has-text('Login')","button:has-text('Accedi')",
-                "button:has-text('Sign in')"]:
+                "button:has-text('Entra')"]:
         try:
-            await page.click(sel, timeout=3000)
+            await page.click(sel, timeout=3000, force=True)
             log.info(f"Submit clicked: {sel}")
+            submitted = True
             break
         except Exception:
             pass
+    if not submitted:
+        # Try JS form submit as last resort
+        await page.evaluate("document.querySelector('form').submit()")
+        log.info("Form submitted via JS")
 
     try:
         await page.wait_for_url("**/default**", timeout=15000)
         log.info(f"Login successful: {page.url}")
     except PlaywrightTimeout:
         log.error(f"Login failed. URL: {page.url}")
-        await page.screenshot(path="login_debug.png")
         raise
 
 async def scrape_buyers_by_segment(page):
