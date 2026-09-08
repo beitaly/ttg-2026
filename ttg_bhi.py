@@ -127,94 +127,90 @@ def write_log(wave, variant_idx, segment, buyer_id, buyer_name,
 async def login(page):
     log.info("Navigating to login page...")
     try:
-        await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
         log.info(f"Login page loaded: {page.url}")
     except Exception as e:
         log.error(f"Failed to load login page: {e}")
         raise
 
-    # Accept cookies - check all checkboxes then confirm
-    try:
-        await page.click("button:has-text('ACCEPT ALL')", timeout=3000)
-        log.info("Cookies accepted via ACCEPT ALL button")
-    except PlaywrightTimeout:
-        pass
+    # Dismiss any overlays by pressing Escape first
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(500)
 
-    try:
-        # Check individual cookie checkboxes if present
-        for cb_id in ["cookieAccept_183551", "cookieAccept_190946", "cookieAccept_191064"]:
-            try:
-                cb = await page.query_selector(f"#{cb_id}")
-                if cb:
-                    await cb.check()
-                    log.info(f"Checked cookie checkbox: {cb_id}")
-            except Exception:
-                pass
-        # Click confirm/save button
-        for sel in ["button:has-text('Confirm')", "button:has-text('Save')",
-                    "button:has-text('Accetta')", "button:has-text('Conferma')",
-                    "button:has-text('OK')", ".cookie-confirm", "#cookieConfirm"]:
-            try:
-                await page.click(sel, timeout=2000)
-                log.info(f"Cookie confirm clicked: {sel}")
-                break
-            except Exception:
-                pass
-        await page.wait_for_timeout(1000)
-    except Exception as e:
-        log.info(f"Cookie handling: {e}")
+    # Try to click any cookie/accept button without waiting long
+    for sel in [
+        "button:has-text('ACCEPT ALL')",
+        "button:has-text('Accetta')",
+        "button:has-text('Accept')",
+        "button:has-text('OK')",
+        "#cookieConfirm",
+        ".cookie-btn",
+    ]:
+        try:
+            await page.click(sel, timeout=1500)
+            log.info(f"Cookie dismissed: {sel}")
+            break
+        except Exception:
+            pass
 
-    # Log all inputs for debugging
+    await page.wait_for_timeout(1000)
+
+    # Log all inputs now visible
     inputs = await page.query_selector_all("input")
     for inp in inputs:
         name = await inp.get_attribute("name")
         type_ = await inp.get_attribute("type")
-        id_ = await inp.get_attribute("id")
-        log.info(f"Input found: name={name} type={type_} id={id_}")
+        id_   = await inp.get_attribute("id")
+        log.info(f"Input: name={name} type={type_} id={id_}")
 
-    # Try multiple email selectors
-    for sel in ["input[name='userid']","input[name='email']","input[type='email']","input[name='username']","input[id='userid']"]:
+    # Fill email
+    filled = False
+    for sel in ["input[name='userid']","input[name='email']","input[type='email']",
+                "input[name='username']","input[id='userid']","input[id='email']"]:
         try:
             await page.fill(sel, CREDENTIALS["email"])
             log.info(f"Email filled: {sel}")
+            filled = True
             break
         except Exception:
-            continue
-    else:
+            pass
+    if not filled:
         log.error("Email field not found")
         raise Exception("Email field not found")
 
-    # Try multiple password selectors
+    # Fill password
+    filled = False
     for sel in ["input[name='password']","input[type='password']","input[id='password']"]:
         try:
             await page.fill(sel, CREDENTIALS["password"])
             log.info(f"Password filled: {sel}")
+            filled = True
             break
         except Exception:
-            continue
-    else:
+            pass
+    if not filled:
         log.error("Password field not found")
         raise Exception("Password field not found")
 
     # Submit
-    for sel in ["button[type=\'submit\']","input[type=\'submit\']","button:has-text(\'Login\')","button:has-text(\'Accedi\')"]:
+    for sel in ["button[type='submit']","input[type='submit']",
+                "button:has-text('Login')","button:has-text('Accedi')",
+                "button:has-text('Sign in')"]:
         try:
-            await page.click(sel)
+            await page.click(sel, timeout=3000)
             log.info(f"Submit clicked: {sel}")
             break
         except Exception:
-            continue
+            pass
 
     try:
         await page.wait_for_url("**/default**", timeout=15000)
         log.info(f"Login successful: {page.url}")
     except PlaywrightTimeout:
         log.error(f"Login failed. URL: {page.url}")
-        await page.screenshot(path="login_debug_bhi.png")
+        await page.screenshot(path="login_debug.png")
         raise
 
-
-# ── Scrape buyers by segment ──────────────────────────────────────────────────
 async def scrape_buyers_by_segment(page):
     """
     Scrape all buyers, organised by segment priority.
