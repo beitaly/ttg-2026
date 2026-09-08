@@ -6,7 +6,6 @@ Same structure as BHI v2 but with BDP credentials and messages.
 
 import asyncio
 import sys
-os.environ["PYTHONUNBUFFERED"] = "1"
 import csv
 import logging
 import os

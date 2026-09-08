@@ -10,7 +10,6 @@ Runs until Oct 8 10:00 CET, daily waves, variant cycling.
 
 import asyncio
 import sys
-os.environ["PYTHONUNBUFFERED"] = "1"
 import csv
 import logging
 import os
