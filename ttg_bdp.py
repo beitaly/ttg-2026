@@ -113,11 +113,36 @@ async def login(page):
         log.error(f"Failed to load login page: {e}")
         raise
 
+    # Accept cookies - check all checkboxes then confirm
     try:
         await page.click("button:has-text('ACCEPT ALL')", timeout=3000)
-        log.info("Cookies accepted")
+        log.info("Cookies accepted via ACCEPT ALL button")
     except PlaywrightTimeout:
-        log.info("No cookie banner found")
+        pass
+
+    try:
+        # Check individual cookie checkboxes if present
+        for cb_id in ["cookieAccept_183551", "cookieAccept_190946", "cookieAccept_191064"]:
+            try:
+                cb = await page.query_selector(f"#{cb_id}")
+                if cb:
+                    await cb.check()
+                    log.info(f"Checked cookie checkbox: {cb_id}")
+            except Exception:
+                pass
+        # Click confirm/save button
+        for sel in ["button:has-text('Confirm')", "button:has-text('Save')",
+                    "button:has-text('Accetta')", "button:has-text('Conferma')",
+                    "button:has-text('OK')", ".cookie-confirm", "#cookieConfirm"]:
+            try:
+                await page.click(sel, timeout=2000)
+                log.info(f"Cookie confirm clicked: {sel}")
+                break
+            except Exception:
+                pass
+        await page.wait_for_timeout(1000)
+    except Exception as e:
+        log.info(f"Cookie handling: {e}")
 
     # Log all inputs for debugging
     inputs = await page.query_selector_all("input")
