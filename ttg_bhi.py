@@ -214,39 +214,42 @@ async def send_request(page, buyer, message_text):
         target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
         await page.goto(target, wait_until="domcontentloaded", timeout=20000)
 
-        # Wait for FullCalendar to render — wait for ANY fc-event to appear
+        # Wait for FullCalendar to render
         try:
             await page.wait_for_selector("div.fc-event", timeout=12000)
         except PlaywrightTimeout:
             return "no_calendar"
 
-        # Now look for a free slot
+        # Find a free slot (confirmed class: stato-libero)
         free_slot = await page.query_selector("div.fc-event.stato-libero")
         if not free_slot:
             return "no_free_slot"
 
         await free_slot.click()
 
-        # Wait for modal to appear
+        # Wait for Bootstrap modal (confirmed selector: div.modal-dialog)
         try:
-            await page.wait_for_selector("textarea, .fancybox-inner", timeout=5000)
+            await page.wait_for_selector("div.modal-dialog", timeout=8000)
         except PlaywrightTimeout:
-            return "no_modal"
+            # Retry click once
+            await free_slot.click()
+            try:
+                await page.wait_for_selector("div.modal-dialog", timeout=5000)
+            except PlaywrightTimeout:
+                return "no_modal"
 
-        # Fill message
-        msg_area = await page.query_selector("textarea, .fancybox-inner textarea")
+        # Fill message textarea (confirmed: textarea[name="msg"])
+        msg_area = await page.query_selector("textarea[name='msg']")
         if msg_area:
             await msg_area.fill(message_text)
-
-        # Click submit
+        
+        # Click submit — confirmed: button[data-action="/ttg26/en/richiedi-appuntamento-ajax"]
         submit = await page.query_selector(
-            "button:has-text('Request an appointment'), "
-            "button:has-text('Richiedi un appuntamento'), "
-            "button.btn-primary"
+            "button[data-action='/ttg26/en/richiedi-appuntamento-ajax']"
         )
         if submit:
             await submit.click()
-            await page.wait_for_timeout(800)
+            await page.wait_for_timeout(1000)  # AJAX call — no page navigation
             return "sent"
 
         return "no_submit"
