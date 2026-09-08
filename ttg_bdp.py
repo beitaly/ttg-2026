@@ -105,92 +105,41 @@ def write_log(wave, variant_idx, segment, buyer_id, buyer_name,
 
 
 async def login(page):
-    log.info("Navigating to login page...")
+    log.info("Setting cookie consent before navigating...")
+
+    # Pre-set the cc_cookie consent cookie so the modal never renders
+    # This mimics a user who has already accepted cookies
+    await page.context.add_cookies([{
+        "name": "cc_cookie",
+        "value": '{"level":["necessary","analytics","marketing"],"revision":0,"data":null,"rfc_cookie":false}',
+        "domain": "www.ttgexpo.it",
+        "path": "/",
+        "httpOnly": False,
+        "secure": False,
+        "sameSite": "Lax"
+    }])
+    log.info("Cookie consent pre-set")
+
     await page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
     log.info(f"Login page loaded: {page.url}")
 
-    # Wait for the login form to actually render (JS-injected)
-    try:
-        await page.wait_for_selector("form", timeout=10000)
-        log.info("Form found")
-    except PlaywrightTimeout:
-        log.warning("No form found after 10s")
+    # The login form fields are confirmed:
+    # input[name='userid'] and input[name='password']
+    # Wait for them to be ready
+    await page.wait_for_selector("input[name='userid']", timeout=10000)
+    log.info("Login form ready")
 
-    # Wait a bit more for JS to finish rendering
-    await page.wait_for_timeout(2000)
+    await page.fill("input[name='userid']", CREDENTIALS["email"])
+    log.info("Email filled")
 
-    # Hide cookie overlays
-    await page.evaluate("""() => {
-        document.querySelectorAll(
-            '[id*=cookie],[class*=cookie],[id*=Cookie],[class*=Cookie],' +
-            '[id*=gdpr],[class*=gdpr],[id*=consent],[class*=consent],' +
-            '.modal-backdrop,.overlay,#overlay'
-        ).forEach(el => {
-            el.style.display = 'none';
-            el.style.visibility = 'hidden';
-            el.style.pointerEvents = 'none';
-        });
-        document.body.style.overflow = 'auto';
-    }""")
+    await page.fill("input[name='password']", CREDENTIALS["password"])
+    log.info("Password filled")
 
-    # Log ALL inputs now visible
-    inputs = await page.query_selector_all("input")
-    for inp in inputs:
-        name = await inp.get_attribute("name")
-        type_ = await inp.get_attribute("type")
-        id_   = await inp.get_attribute("id")
-        log.info(f"Input: name={name} type={type_} id={id_}")
+    await page.click("button[type='submit']")
+    log.info("Submit clicked")
 
-    # Fill email
-    filled = False
-    for sel in ["input[name='userid']","input[name='email']","input[type='email']",
-                "input[name='username']","input[id='userid']","input[id='email']",
-                "input[name='user']","input[name='login']"]:
-        try:
-            await page.fill(sel, CREDENTIALS["email"])
-            log.info(f"Email filled: {sel}")
-            filled = True
-            break
-        except Exception:
-            pass
-    if not filled:
-        log.error("Email field not found — dumping full HTML")
-        html = await page.content()
-        # Find form-related HTML
-        idx = html.find('<form')
-        log.info(f"FORM HTML: {html[idx:idx+1000] if idx > -1 else 'NO FORM FOUND'}")
-        raise Exception("Email field not found")
-
-    # Fill password
-    filled = False
-    for sel in ["input[name='password']","input[type='password']","input[id='password']"]:
-        try:
-            await page.fill(sel, CREDENTIALS["password"])
-            log.info(f"Password filled: {sel}")
-            filled = True
-            break
-        except Exception:
-            pass
-    if not filled:
-        raise Exception("Password field not found")
-
-    # Submit
-    for sel in ["button[type='submit']","input[type='submit']",
-                "button:has-text('Login')","button:has-text('Accedi')",
-                "button:has-text('Entra')","button:has-text('Sign in')"]:
-        try:
-            await page.click(sel, timeout=3000, force=True)
-            log.info(f"Submit clicked: {sel}")
-            break
-        except Exception:
-            pass
-
-    try:
-        await page.wait_for_url("**/default**", timeout=15000)
-        log.info(f"Login successful: {page.url}")
-    except PlaywrightTimeout:
-        log.error(f"Login failed. URL: {page.url}")
-        raise
+    await page.wait_for_url("**/default**", timeout=15000)
+    log.info(f"Login successful: {page.url}")
 
 async def scrape_buyers_by_segment(page):
     all_buyers = []
