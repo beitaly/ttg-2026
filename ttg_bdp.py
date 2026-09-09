@@ -226,6 +226,7 @@ async def scrape_buyers_by_segment(page):
                                     pass
                             await page.wait_for_timeout(2000)
                             body_text = await page.inner_text("body")
+                            log.info(f"BODY_DUMP|{buyer_id}|" + body_text[:500].replace("\n", " "))
                             email_match = _re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", body_text)
                             if email_match:
                                 email = email_match.group(0)
