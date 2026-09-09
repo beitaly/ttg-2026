@@ -210,41 +210,68 @@ async def scrape_buyers_by_segment(page):
                         seen_ids.add(buyer_id)
                         seg_count += 1
 
-                        # Fetch buyer profile page for extra details
-                        contact, website, description, markets = "", "", "", ""
+                        # Fetch buyer profile page for full details
+                        contact, website, address, email, phone = "", "", "", "", ""
                         try:
-                            profile_url = BASE_URL + f"/ttg26/en/scheda-buyer?user={buyer_id}"
+                            profile_url = BASE_URL + f"/ttg26/en/agenda-appuntamenti?user={buyer_id}"
                             await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
-                            for sel in ["h2.nome", ".referente", "h3.nome", ".contact-name"]:
+
+                            # Contact name: "Buyer attending: Ms. Kseniya Forte"
+                            for sel in ["header span", ".profile-env header span"]:
                                 el = await page.query_selector(sel)
                                 if el:
-                                    contact = (await el.inner_text()).strip()
-                                    break
-                            for sel in ["a.sito-web", ".website a"]:
-                                el = await page.query_selector(sel)
-                                if el:
-                                    website = (await el.get_attribute("href") or "").strip()
-                                    if website:
+                                    txt = (await el.inner_text()).strip()
+                                    if "attending" in txt.lower() or "buyer" in txt.lower():
+                                        contact = txt.replace("Buyer attending:", "").strip()
                                         break
-                            for sel in [".descrizione p", ".description p", ".profilo p"]:
-                                el = await page.query_selector(sel)
-                                if el:
-                                    description = (await el.inner_text()).strip()[:300]
-                                    if description:
-                                        break
+
+                            # Website
+                            el = await page.query_selector("ul.user-details a[href*='http']")
+                            if el:
+                                website = (await el.get_attribute("href") or "").strip()
+
+                            # Address
+                            el = await page.query_selector("ul.user-details li div")
+                            if el:
+                                address = " ".join((await el.inner_text()).split()).strip()
+
+                            # Email & phone — loaded via AJAX panel
+                            # Click the PROFILE panel to trigger the AJAX load
+                            panel_toggle = await page.query_selector(
+                                "a[href='#dati-pubblici-profilazione'], "
+                                "a[data-toggle='collapse'][href*='profilazione']"
+                            )
+                            if panel_toggle:
+                                await panel_toggle.click()
+                                await page.wait_for_timeout(2000)
+                                panel_body = await page.query_selector("#dati-pubblici-profilazione .panel-body")
+                                if panel_body:
+                                    panel_html = await panel_body.inner_text()
+                                    # Extract email
+                                    import re as _re
+                                    email_match = _re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", panel_html)
+                                    if email_match:
+                                        email = email_match.group(0)
+                                    # Extract phone
+                                    phone_el = await panel_body.query_selector(".telefono, [class*='phone'], [class*='tel']")
+                                    if phone_el:
+                                        phone = (await phone_el.inner_text()).strip()
+
                             await page.goto(url, wait_until="domcontentloaded", timeout=12000)
-                        except Exception:
+                        except Exception as e:
+                            log.debug(f"Profile fetch error for {buyer_id}: {e}")
                             try:
                                 await page.goto(url, wait_until="domcontentloaded", timeout=12000)
                             except Exception:
                                 pass
 
-                        log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|{website}|{description[:80]}")
+                        log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|{email}|{phone}|{website}|{address[:60]}")
+
                         all_buyers.append({
                             "id": buyer_id, "name": company, "company": company,
                             "country": country,
-                            "contact": contact, "website": website,
-                            "description": description,
+                            "contact": contact, "email": email, "phone": phone,
+                            "website": website, "address": address,
                             "appt_url": BASE_URL + href,
                             "segment": seg_label, "msg_variant": msg_idx,
                         })
