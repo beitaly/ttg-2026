@@ -224,7 +224,7 @@ async def scrape_buyers_by_segment(page):
                             if panel_toggle:
                                 await panel_toggle.click()
                                 await page.wait_for_timeout(2000)
-                                log.info(f"PANEL_HTML|{buyer_id}|" + (await page.inner_text("#dati-pubblici-profilazione")) [:300].replace("\n"," "))
+                                log.info(f"PANEL_HTML|{buyer_id}|" + (await page.inner_text("#dati-pubblici-profilazione"))[:300].replace("\n", " "))
                                 panel_body = await page.query_selector("#dati-pubblici-profilazione .panel-body")
                                 if panel_body:
                                     panel_html = await panel_body.inner_text()
