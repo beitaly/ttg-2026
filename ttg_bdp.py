@@ -26,7 +26,7 @@ CREDENTIALS = {
 CET = timezone(timedelta(hours=1))
 WINDOW_OPEN  = datetime(2026, 9,  8, 16, 0, 0, tzinfo=CET)
 WINDOW_CLOSE = datetime(2026, 10, 8, 10, 0, 0, tzinfo=CET)
-WAVE_INTERVAL_HOURS = 24
+WAVE_INTERVAL_HOURS = 1
 
 LOG_FILE = Path("ttg_bdp_log.csv")
 
@@ -40,6 +40,12 @@ SEGMENT_CATEGORIES = [
 ]
 
 LETTERS = list("123ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+# Priority countries
+PRIORITY_COUNTRIES = {
+    "France", "United Kingdom", "United States", "Canada",
+    "Australia", "Germany", "Spain", "Brazil"
+}
 
 MESSAGES = [
     # 0 — Boutique & Cultural Agents
@@ -153,6 +159,10 @@ async def scrape_buyers_by_segment(page):
                             continue
                         country_el = await entry.query_selector("p.risultati-info span")
                         country = (await country_el.inner_text()).strip() if country_el else ""
+                        # Skip non-priority countries
+                        if country not in PRIORITY_COUNTRIES:
+                            continue
+
                         seen_ids.add(buyer_id)
                         seg_count += 1
                         all_buyers.append({
