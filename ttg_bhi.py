@@ -222,44 +222,48 @@ async def scrape_buyers_by_segment(page):
 async def send_request(page, buyer, message_text):
     try:
         target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
-        await page.goto(target, wait_until="domcontentloaded", timeout=20000)
+        await page.goto(target, wait_until="domcontentloaded", timeout=25000)
 
-        # Wait for FullCalendar to render
+        # Wait for FullCalendar — increase to 20s, many pages are slow
         try:
-            await page.wait_for_selector("div.fc-event", timeout=12000)
+            await page.wait_for_selector("div.fc-event", timeout=20000)
         except PlaywrightTimeout:
-            return "no_calendar"
+            # One retry with a fresh navigation
+            await page.goto(target, wait_until="domcontentloaded", timeout=25000)
+            try:
+                await page.wait_for_selector("div.fc-event", timeout=15000)
+            except PlaywrightTimeout:
+                return "no_calendar"
 
-        # Find a free slot (confirmed class: stato-libero)
+        # Find free slot
         free_slot = await page.query_selector("div.fc-event.stato-libero")
         if not free_slot:
             return "no_free_slot"
 
         await free_slot.click()
 
-        # Wait for Bootstrap modal (confirmed selector: div.modal-dialog)
+        # Wait for modal
         try:
             await page.wait_for_selector("div.modal-dialog", timeout=8000)
         except PlaywrightTimeout:
-            # Retry click once
             await free_slot.click()
             try:
                 await page.wait_for_selector("div.modal-dialog", timeout=5000)
             except PlaywrightTimeout:
                 return "no_modal"
 
-        # Fill message textarea (confirmed: textarea[name="msg"])
+        # Fill message
         msg_area = await page.query_selector("textarea[name='msg']")
         if msg_area:
             await msg_area.fill(message_text)
-        
-        # Click submit — confirmed: button[data-action="/ttg26/en/richiedi-appuntamento-ajax"]
+
+        # Submit
         submit = await page.query_selector(
             "button[data-action='/ttg26/en/richiedi-appuntamento-ajax']"
         )
         if submit:
             await submit.click()
-            await page.wait_for_timeout(1000)  # AJAX call — no page navigation
+            await page.wait_for_timeout(1000)
             return "sent"
 
         return "no_submit"
