@@ -266,16 +266,16 @@ async def scrape_buyers_by_segment(page):
 async def send_request(page, buyer, message_text):
     try:
         target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
-        await page.goto(target, wait_until="domcontentloaded", timeout=25000)
+        await page.goto(target, wait_until="domcontentloaded", timeout=15000)
 
-        # Wait for FullCalendar — increase to 20s, many pages are slow
+        # Wait for FullCalendar — 8s first attempt
         try:
-            await page.wait_for_selector("div.fc-event", timeout=20000)
+            await page.wait_for_selector("div.fc-event", timeout=8000)
         except PlaywrightTimeout:
             # One retry with a fresh navigation
-            await page.goto(target, wait_until="domcontentloaded", timeout=25000)
+            await page.goto(target, wait_until="domcontentloaded", timeout=15000)
             try:
-                await page.wait_for_selector("div.fc-event", timeout=15000)
+                await page.wait_for_selector("div.fc-event", timeout=8000)
             except PlaywrightTimeout:
                 return "no_calendar"
 
