@@ -235,23 +235,7 @@ async def scrape_buyers_by_segment(page):
                             if el:
                                 address = " ".join((await el.inner_text()).split()).strip()
 
-                            # Email & phone — click all collapse toggles to reveal hidden sections,
-                            # then scan full page body
-                            import re as _re
-                            toggles = await page.query_selector_all("a[data-toggle='collapse'], button[data-toggle='collapse']")
-                            for t in toggles:
-                                try:
-                                    await t.click()
-                                except Exception:
-                                    pass
-                            await page.wait_for_timeout(2000)
-                            body_text = await page.inner_text("body")
-                            email_match = _re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", body_text)
-                            if email_match:
-                                email = email_match.group(0)
-                            phone_match = _re.search(r"(?:Tel|Phone|Ph|Mob)[.:\s]*([+\d\s\-().]{7,25})", body_text, _re.IGNORECASE)
-                            if phone_match:
-                                phone = phone_match.group(1).strip()
+                            # Email & phone not available on this page (platform withholds until appointment confirmed)
 
                             await page.goto(url, wait_until="domcontentloaded", timeout=12000)
                         except Exception as e:
