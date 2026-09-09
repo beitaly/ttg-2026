@@ -215,28 +215,23 @@ async def scrape_buyers_by_segment(page):
                             if el:
                                 address = " ".join((await el.inner_text()).split()).strip()
 
-                            # Email & phone — loaded via AJAX panel
-                            # Click the PROFILE panel to trigger the AJAX load
-                            panel_toggle = await page.query_selector(
-                                "a[href='#dati-pubblici-profilazione'], "
-                                "a[data-toggle='collapse'][href*='profilazione']"
-                            )
-                            if panel_toggle:
-                                await panel_toggle.click()
-                                await page.wait_for_timeout(2000)
-                                log.info(f"PANEL_HTML|{buyer_id}|" + (await page.inner_text("#dati-pubblici-profilazione"))[:300].replace("\n", " "))
-                                panel_body = await page.query_selector("#dati-pubblici-profilazione .panel-body")
-                                if panel_body:
-                                    panel_html = await panel_body.inner_text()
-                                    # Extract email
-                                    import re as _re
-                                    email_match = _re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", panel_html)
-                                    if email_match:
-                                        email = email_match.group(0)
-                                    # Extract phone
-                                    phone_el = await panel_body.query_selector(".telefono, [class*='phone'], [class*='tel']")
-                                    if phone_el:
-                                        phone = (await phone_el.inner_text()).strip()
+                            # Email & phone — click all collapse toggles to reveal hidden sections,
+                            # then scan full page body
+                            import re as _re
+                            toggles = await page.query_selector_all("a[data-toggle='collapse'], button[data-toggle='collapse']")
+                            for t in toggles:
+                                try:
+                                    await t.click()
+                                except Exception:
+                                    pass
+                            await page.wait_for_timeout(2000)
+                            body_text = await page.inner_text("body")
+                            email_match = _re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", body_text)
+                            if email_match:
+                                email = email_match.group(0)
+                            phone_match = _re.search(r"(?:Tel|Phone|Ph|Mob)[.:\s]*([+\d\s\-().]{7,25})", body_text, _re.IGNORECASE)
+                            if phone_match:
+                                phone = phone_match.group(1).strip()
 
                             await page.goto(url, wait_until="domcontentloaded", timeout=12000)
                         except Exception as e:
