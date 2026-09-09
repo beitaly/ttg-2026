@@ -179,15 +179,44 @@ async def scrape_buyers_by_segment(page):
                             continue
                         country_el = await entry.query_selector("p.risultati-info span")
                         country = (await country_el.inner_text()).strip() if country_el else ""
-                        # Skip non-priority countries
-                        if country not in PRIORITY_COUNTRIES:
-                            continue
-
                         seen_ids.add(buyer_id)
                         seg_count += 1
+
+                        # Fetch buyer profile page for extra details
+                        contact, website, description, markets = "", "", "", ""
+                        try:
+                            profile_url = BASE_URL + f"/ttg26/en/scheda-buyer?user={buyer_id}"
+                            await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
+                            for sel in ["h2.nome", ".referente", "h3.nome", ".contact-name"]:
+                                el = await page.query_selector(sel)
+                                if el:
+                                    contact = (await el.inner_text()).strip()
+                                    break
+                            for sel in ["a.sito-web", ".website a"]:
+                                el = await page.query_selector(sel)
+                                if el:
+                                    website = (await el.get_attribute("href") or "").strip()
+                                    if website:
+                                        break
+                            for sel in [".descrizione p", ".description p", ".profilo p"]:
+                                el = await page.query_selector(sel)
+                                if el:
+                                    description = (await el.inner_text()).strip()[:300]
+                                    if description:
+                                        break
+                            await page.goto(url, wait_until="domcontentloaded", timeout=12000)
+                        except Exception:
+                            try:
+                                await page.goto(url, wait_until="domcontentloaded", timeout=12000)
+                            except Exception:
+                                pass
+
+                        log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|{website}|{description[:80]}")
                         all_buyers.append({
                             "id": buyer_id, "name": company, "company": company,
                             "country": country,
+                            "contact": contact, "website": website,
+                            "description": description,
                             "appt_url": BASE_URL + href,
                             "segment": seg_label, "msg_variant": msg_idx,
                         })
