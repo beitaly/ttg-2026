@@ -242,21 +242,51 @@ async def send_request(page, buyer, message_text):
 
 
 async def run_wave(page, buyers, wave_number):
+    """Cycle through message variants, refreshing login every 50 buyers."""
     wave_shift = (wave_number - 1) % len(MESSAGES)
-    log.info(f"=== WAVE {wave_number} | {len(buyers)} buyers ===")
+    log.info(f"=== WAVE {wave_number} | shift={wave_shift} | {len(buyers)} buyers ===")
+    no_calendar_streak = 0
 
     for i, buyer in enumerate(buyers):
+        # Re-login every 50 buyers to prevent session expiry
+        if i > 0 and i % 50 == 0:
+            log.info(f"Session refresh at buyer {i+1}...")
+            try:
+                await login(page)
+                no_calendar_streak = 0
+                log.info("Session refreshed")
+            except Exception as e:
+                log.error(f"Session refresh failed: {e}")
+
+        # Also re-login if we hit 5 consecutive no_calendar results
+        if no_calendar_streak >= 5:
+            log.info(f"Session likely expired (streak={no_calendar_streak}), re-logging in...")
+            try:
+                await login(page)
+                no_calendar_streak = 0
+                log.info("Session refreshed")
+            except Exception as e:
+                log.error(f"Session refresh failed: {e}")
+
         variant_idx  = (buyer["msg_variant"] + wave_shift) % len(MESSAGES)
         msg_template = MESSAGES[variant_idx]
         first_name   = (buyer["name"] or buyer["company"] or "there").split()[0]
         message_text = msg_template.format(name=first_name)
 
         status = await send_request(page, buyer, message_text)
-        write_log(wave_number, variant_idx, buyer["segment"],
-                  buyer["id"], buyer["name"], buyer["company"],
-                  buyer["country"], status)
 
-        log.info(f"  [{i+1}/{len(buyers)}] {buyer['company']} → {status}")
+        if status == "no_calendar":
+            no_calendar_streak += 1
+        else:
+            no_calendar_streak = 0
+
+        write_log(
+            wave=wave_number, variant_idx=variant_idx, segment=buyer["segment"],
+            buyer_id=buyer["id"], buyer_name=buyer["name"],
+            buyer_company=buyer["company"], buyer_country=buyer["country"],
+            status=status,
+        )
+        log.info(f"  [{i+1}/{len(buyers)}] {buyer['company']} ({buyer['segment']}) → {status}")
         await asyncio.sleep(1.5)
 
     log.info(f"=== Wave {wave_number} complete ===")
