@@ -37,4 +37,4 @@ RUN playwright install chromium
 
 COPY . .
 
-CMD ["python", "export_buyers.py"]
+CMD ["sh", "-c", "python ttg_bhi.py & python ttg_bdp.py & wait"]
