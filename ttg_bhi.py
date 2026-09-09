@@ -52,6 +52,7 @@ SEGMENT_CATEGORIES = [
 
 # Alphabetical index letters
 LETTERS = list("123ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+TARGETS_CSV_URL = "https://raw.githubusercontent.com/beitaly/ttg-2026/main/TTG%20BHI%20Targets%20-%20Sheet1.csv"
 
 # Priority countries
 PRIORITY_COUNTRIES = {
@@ -139,6 +140,33 @@ async def login(page):
     if "login" in page.url and "autologin" not in page.url:
         raise Exception(f"Autologin failed — still on login page: {page.url}")
     log.info("Login successful")
+
+
+def fetch_targets(csv_url):
+    """
+    Fetch the target CSV from GitHub. Returns:
+    - None  → sheet is empty or unreachable, target ALL buyers
+    - set() → only target buyer IDs in this set (marked YES)
+    """
+    import urllib.request, csv, io
+    try:
+        with urllib.request.urlopen(csv_url, timeout=10) as r:
+            content = r.read().decode("utf-8")
+        reader = csv.DictReader(io.StringIO(content))
+        rows = list(reader)
+        if not rows:
+            log.info("Target sheet empty — targeting all buyers")
+            return None
+        targets = {
+            row["Buyer ID"].strip()
+            for row in rows
+            if row.get("Target", "").strip().upper() == "YES"
+        }
+        log.info(f"Target sheet loaded: {len(targets)} buyers marked YES")
+        return targets
+    except Exception as e:
+        log.warning(f"Could not fetch target sheet: {e} — targeting all buyers")
+        return None
 
 async def scrape_buyers_by_segment(page):
     all_buyers = []
@@ -307,6 +335,11 @@ async def send_request(page, buyer, message_text):
 async def run_wave(page, buyers, wave_number):
     """Cycle through message variants, refreshing login every 50 buyers."""
     wave_shift = (wave_number - 1) % len(MESSAGES)
+    # Load target list from GitHub sheet
+    targets = fetch_targets(TARGETS_CSV_URL)
+    if targets is not None:
+        buyers = [b for b in buyers if b["id"] in targets]
+        log.info(f"After target filter: {len(buyers)} buyers to contact this wave")
     log.info(f"=== WAVE {wave_number} | shift={wave_shift} | {len(buyers)} buyers ===")
     no_calendar_streak = 0
 
