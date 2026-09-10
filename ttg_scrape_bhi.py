@@ -39,11 +39,10 @@ LETTERS = list("123ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [INFO] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+import sys
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter("%(asctime)s [INFO] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+logging.basicConfig(level=logging.INFO, handlers=[handler])
 log = logging.getLogger(__name__)
 
 # ── Scrape ────────────────────────────────────────────────────────────────────
@@ -88,38 +87,16 @@ async def scrape_all(page):
                         seen_ids.add(buyer_id)
                         seg_count += 1
 
-                        # Visit diary page for full profile
-                        contact, country, website, address = "", "", "", ""
-                        try:
-                            diary_url = BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer_id
-                            await page.goto(diary_url, wait_until="domcontentloaded", timeout=6000)
-                            header = await page.query_selector("header.row span")
-                            if header:
-                                raw = (await header.inner_text()).strip()
-                                contact = raw.replace("Buyer attending:", "").strip()
-                            addr_el = await page.query_selector("ul.user-details li div")
-                            if addr_el:
-                                addr_text = (await addr_el.inner_text()).strip()
-                                lines = [l.strip() for l in addr_text.splitlines() if l.strip()]
-                                address = " ".join(lines)
-                                if lines:
-                                    country = lines[-1]
-                            web_el = await page.query_selector("ul.user-details + ul.user-details a[href^='http']")
-                            if web_el:
-                                website = (await web_el.get_attribute("href") or "").strip()
-                        except Exception as e:
-                            log.debug(f"Profile fetch error for {company}: {e}")
-
-                        log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|||{website}|{address}")
+                        log.info(f"BUYER_DETAIL|{buyer_id}|{company}||{seg_label}||||")
 
                         all_buyers.append({
                             "id":       buyer_id,
                             "company":  company,
-                            "country":  country,
+                            "country":  "",
                             "segment":  seg_label,
-                            "contact":  contact,
-                            "website":  website,
-                            "address":  address,
+                            "contact":  "",
+                            "website":  "",
+                            "address":  "",
                         })
                     except Exception as e:
                         log.debug(f"Entry parse error: {e}")
