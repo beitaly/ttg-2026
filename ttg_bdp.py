@@ -208,63 +208,36 @@ async def scrape_buyers_by_segment(page):
                         seen_ids.add(buyer_id)
                         seg_count += 1
 
-                        # Try extracting from search listing first
+                        # Visit diary page to get full profile data
                         contact, country, website, address = "", "", "", ""
                         try:
-                            contact_el = await entry.query_selector("p.buyer-contact, .contact-name, .nome-cognome")
-                            if contact_el:
-                                contact = (await contact_el.inner_text()).strip()
-                            country_el = await entry.query_selector("span.country, .country-name, [class*='country']")
-                            if country_el:
-                                country = (await country_el.inner_text()).strip()
-                            website_el = await entry.query_selector("a[href^='http']:not([href*='bme.iegexpo']):not([href*='agenda'])")
-                            if website_el:
-                                website = (await website_el.get_attribute("href") or "").strip()
-                            address_el = await entry.query_selector("p.address, .indirizzo, [class*='address']")
-                            if address_el:
-                                address = (await address_el.inner_text()).strip()
-                        except Exception:
-                            pass
-
-                        # If key fields missing, visit the profile page
-                        if not country or not contact:
+                            diary_url = BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer_id
+                            await page.goto(diary_url, wait_until="domcontentloaded", timeout=12000)
+                            # Contact: span after h1 "Buyer attending: ..."
+                            header = await page.query_selector("header.row span")
+                            if header:
+                                raw = (await header.inner_text()).strip()
+                                contact = raw.replace("Buyer attending:", "").strip()
+                            # Address + Country: first ul.user-details li div
+                            addr_el = await page.query_selector("ul.user-details li div")
+                            if addr_el:
+                                addr_text = (await addr_el.inner_text()).strip()
+                                lines = [l.strip() for l in addr_text.splitlines() if l.strip()]
+                                address = " ".join(lines)
+                                if lines:
+                                    country = lines[-1]
+                            # Website: second ul.user-details a[href^='http']
+                            web_el = await page.query_selector("ul.user-details + ul.user-details a[href^='http']")
+                            if web_el:
+                                website = (await web_el.get_attribute("href") or "").strip()
+                            # Go back to search listing
+                            await page.goto(url, wait_until="domcontentloaded", timeout=12000)
+                        except Exception as e:
+                            log.debug(f"Profile fetch error for {company}: {e}")
                             try:
-                                profile_url = BASE_URL + href
-                                await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
-                                # Country
-                                if not country:
-                                    for sel in ["span.country", ".country", "[class*='country']", "td:has-text('Country') + td"]:
-                                        el = await page.query_selector(sel)
-                                        if el:
-                                            country = (await el.inner_text()).strip()
-                                            break
-                                # Contact
-                                if not contact:
-                                    for sel in [".nome-cognome", ".contact-name", "p.buyer-contact", ".referente"]:
-                                        el = await page.query_selector(sel)
-                                        if el:
-                                            contact = (await el.inner_text()).strip()
-                                            break
-                                # Website
-                                if not website:
-                                    el = await page.query_selector("a[href^='http']:not([href*='bme.iegexpo']):not([href*='agenda'])")
-                                    if el:
-                                        website = (await el.get_attribute("href") or "").strip()
-                                # Address
-                                if not address:
-                                    for sel in [".indirizzo", "p.address", "[class*='address']"]:
-                                        el = await page.query_selector(sel)
-                                        if el:
-                                            address = (await el.inner_text()).strip()
-                                            break
-                                # Go back to search results
-                                await page.go_back(wait_until="domcontentloaded", timeout=10000)
-                            except Exception as e:
-                                log.debug(f"Profile fetch error for {company}: {e}")
-                                try:
-                                    await page.goto(url, wait_until="domcontentloaded", timeout=12000)
-                                except Exception:
-                                    pass
+                                await page.goto(url, wait_until="domcontentloaded", timeout=12000)
+                            except Exception:
+                                pass
 
                         log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|||{website}|{address}")
 
@@ -298,19 +271,46 @@ async def scrape_buyers_by_segment(page):
 
 
 # ── Parse locked slot expiry ──────────────────────────────────────────────────
-def parse_expiry_seconds(modal_text):
+def parse_expiry_seconds(expiry_str):
     """
-    Parse 'Expires in: X days Y hours Z minutes W seconds' from modal text.
-    Returns total seconds until expiry, or None if not found.
+    Parse expiry from scadenza_opzione_sua datetime string e.g. '2026-09-10 16:10'.
+    Returns seconds until expiry from now (CET), or None if not found/past.
     """
-    m = re.search(
-        r"Expires in:\s*(\d+)\s*days?\s*(\d+)\s*hours?\s*(\d+)\s*minutes?\s*(\d+)\s*seconds?",
-        modal_text, re.IGNORECASE
-    )
-    if not m:
+    if not expiry_str:
         return None
-    d, h, mi, s = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
-    return d * 86400 + h * 3600 + mi * 60 + s
+    try:
+        expiry_dt = datetime.strptime(expiry_str, "%Y-%m-%d %H:%M").replace(tzinfo=CET)
+        secs = (expiry_dt - datetime.now(CET)).total_seconds()
+        return int(secs) if secs > 0 else None
+    except Exception:
+        return None
+
+
+def extract_locked_slots_from_page_source(html):
+    """
+    Extract locked slots from the calendar JSON embedded in page source.
+    Returns list of dicts with slot time and expiry seconds.
+    """
+    import json as _json
+    locked = []
+    m = re.search(r"events:\s*(\[.*?\])", html, re.DOTALL)
+    if not m:
+        return locked
+    try:
+        events = _json.loads(m.group(1))
+        for ev in events:
+            if ev.get("stato") == "stato-opzionato" and ev.get("stato_mio") == "Free":
+                expiry_str = ev.get("scadenza_opzione_sua")
+                expiry_secs = parse_expiry_seconds(expiry_str)
+                if expiry_secs and expiry_secs > 0:
+                    locked.append({
+                        "slot": ev.get("slot"),
+                        "expiry_secs": expiry_secs,
+                        "expiry_str": expiry_str,
+                    })
+    except Exception:
+        pass
+    return locked
 
 
 # ── Scan and book buyer calendar ─────────────────────────────────────────────
@@ -341,55 +341,13 @@ async def scan_and_book(page, buyer, message_text):
         if free_slot:
             return await _book_free_slot(page, free_slot, message_text)
 
-        # Check for locked slots where we are free
-        locked_slots = await page.query_selector_all("div.fc-event.stato-bloccato, div.fc-event[class*='locked']")
-        best_expiry = None
-        best_text   = ""
-
-        for slot in locked_slots:
-            try:
-                await slot.click()
-                try:
-                    await page.wait_for_selector("div.modal-dialog", timeout=4000)
-                except PlaywrightTimeout:
-                    continue
-
-                modal = await page.query_selector("div.modal-dialog")
-                if not modal:
-                    await page.keyboard.press("Escape")
-                    continue
-
-                modal_text = await modal.inner_text()
-
-                if "You: Free" not in modal_text:
-                    await page.keyboard.press("Escape")
-                    await asyncio.sleep(0.3)
-                    continue
-
-                expiry_secs = parse_expiry_seconds(modal_text)
-                slot_text = modal_text.strip().split("\n")[0]
-
-                if expiry_secs is not None:
-                    if best_expiry is None or expiry_secs < best_expiry:
-                        best_expiry = expiry_secs
-                        best_text   = slot_text
-
-                cancel_btn = await page.query_selector("button:has-text('Cancel'), button:has-text('Close')")
-                if cancel_btn:
-                    await cancel_btn.click()
-                else:
-                    await page.keyboard.press("Escape")
-                await asyncio.sleep(0.3)
-
-            except Exception as e:
-                log.debug(f"Locked slot check error: {e}")
-                try:
-                    await page.keyboard.press("Escape")
-                except Exception:
-                    pass
-
-        if best_expiry is not None:
-            return ("locked", best_expiry, best_text)
+        # Extract locked slots from embedded calendar JSON (no clicking needed)
+        html = await page.content()
+        locked_slots = extract_locked_slots_from_page_source(html)
+        if locked_slots:
+            # Return the soonest-expiring locked slot
+            best = min(locked_slots, key=lambda x: x["expiry_secs"])
+            return ("locked", best["expiry_secs"], best.get("slot", ""))
 
         return "no_free_slot"
 
