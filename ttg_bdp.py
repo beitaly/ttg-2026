@@ -131,6 +131,19 @@ def send_notification(subject, body):
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────
+async def dismiss_cookie_banner(page):
+    try:
+        btn = await page.query_selector("button#c-p-bn, button.c-bn[data-role='acceptAll'], a#accept-all, button:has-text('ACCEPT ALL COOKIES')")
+        if btn:
+            await btn.click(timeout=2000)
+            await asyncio.sleep(0.3)
+    except Exception:
+        pass
+    try:
+        await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
+    except Exception:
+        pass
+
 async def login(page):
     log.info("Logging in via autologin URL...")
     autologin_url = os.environ.get("BDP_AUTOLOGIN_URL", "")
@@ -371,6 +384,10 @@ async def _book_free_slot(page, free_slot, message_text):
         )
         if not submit:
             return "no_submit"
+
+        # Dismiss cookie banner and any overlays before clicking submit
+        await dismiss_cookie_banner(page)
+        await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
 
         await submit.click()
 
