@@ -219,13 +219,11 @@ async def scrape_buyers_by_segment(page):
                         contact, country, website, address = "", "", "", ""
                         try:
                             diary_url = BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer_id
-                            await page.goto(diary_url, wait_until="domcontentloaded", timeout=12000)
-                            # Contact: span after h1 "Buyer attending: ..."
+                            await page.goto(diary_url, wait_until="domcontentloaded", timeout=6000)
                             header = await page.query_selector("header.row span")
                             if header:
                                 raw = (await header.inner_text()).strip()
                                 contact = raw.replace("Buyer attending:", "").strip()
-                            # Address + Country: first ul.user-details li div
                             addr_el = await page.query_selector("ul.user-details li div")
                             if addr_el:
                                 addr_text = (await addr_el.inner_text()).strip()
@@ -233,18 +231,11 @@ async def scrape_buyers_by_segment(page):
                                 address = " ".join(lines)
                                 if lines:
                                     country = lines[-1]
-                            # Website: second ul.user-details a[href^='http']
                             web_el = await page.query_selector("ul.user-details + ul.user-details a[href^='http']")
                             if web_el:
                                 website = (await web_el.get_attribute("href") or "").strip()
-                            # Go back to search listing
-                            await page.goto(url, wait_until="domcontentloaded", timeout=12000)
                         except Exception as e:
                             log.debug(f"Profile fetch error for {company}: {e}")
-                            try:
-                                await page.goto(url, wait_until="domcontentloaded", timeout=12000)
-                            except Exception:
-                                pass
 
                         log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|||{website}|{address}")
 
