@@ -519,7 +519,9 @@ async def run_cycle(page, buyers, cycle_number, locked_queue):
 
         if result[0] == "free":
             log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → FREE SLOT — booking!")
-            status = await full_book(page, buyer, message_text)
+            status = await book_slot(page, buyer, message_text)
+            if status == "no_free_slot":
+                status = await full_book(page, buyer, message_text)
             write_log(cycle_number, variant_idx, buyer["segment"],
                       buyer["id"], buyer["name"], buyer["company"],
                       buyer["country"], status)
