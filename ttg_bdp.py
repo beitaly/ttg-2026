@@ -157,7 +157,7 @@ def fetch_targets(csv_url):
         targets = {
             row["Buyer ID"].strip()
             for row in rows
-            if row.get("Target", "").strip().upper() == "YES"
+            if row.get("Target BDP", "").strip().upper() == "YES"
         }
         log.info(f"Target sheet: {len(targets)} buyers marked YES")
         return targets
@@ -182,7 +182,7 @@ async def scrape_buyers_by_segment(page):
                        f"?ragione_sociale_iniziale={letter}"
                        f"&categoria={categoria_val}&submit=1&page={page_num}")
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=20000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=10000)
                 except Exception as e:
                     log.warning(f"  Timeout {letter} p{page_num}: {e}")
                     break
@@ -316,11 +316,11 @@ async def scan_and_book(page, buyer, message_text):
     """
     target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
     try:
-        await page.goto(target, wait_until="domcontentloaded", timeout=15000)
+        await page.goto(target, wait_until="domcontentloaded", timeout=10000)
         try:
             await page.wait_for_selector("div.fc-event", timeout=8000)
         except PlaywrightTimeout:
-            await page.goto(target, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(target, wait_until="domcontentloaded", timeout=10000)
             try:
                 await page.wait_for_selector("div.fc-event", timeout=8000)
             except PlaywrightTimeout:
@@ -374,18 +374,8 @@ async def _book_free_slot(page, free_slot, message_text):
 
         await submit.click()
 
-        # Wait for confirm button (second click, ~4s countdown)
-        try:
-            confirm = await page.wait_for_selector(
-                "button.confirm-appointment, button:has-text('Confirm'), button[data-confirm]",
-                timeout=8000
-            )
-            if confirm:
-                await asyncio.sleep(4.5)
-                await confirm.click()
-                await page.wait_for_timeout(1000)
-        except PlaywrightTimeout:
-            pass
+        # Wait briefly for page to process — no second confirm button in this portal
+        await asyncio.sleep(2)
 
         return "sent"
 
@@ -405,11 +395,11 @@ async def _book_free_slot(page, free_slot, message_text):
     """
     target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
     try:
-        await page.goto(target, wait_until="domcontentloaded", timeout=15000)
+        await page.goto(target, wait_until="domcontentloaded", timeout=10000)
         try:
             await page.wait_for_selector("div.fc-event", timeout=8000)
         except PlaywrightTimeout:
-            await page.goto(target, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(target, wait_until="domcontentloaded", timeout=10000)
             try:
                 await page.wait_for_selector("div.fc-event", timeout=8000)
             except PlaywrightTimeout:
