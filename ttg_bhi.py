@@ -272,8 +272,139 @@ def parse_expiry_seconds(modal_text):
     return d * 86400 + h * 3600 + mi * 60 + s
 
 
-# ── Scan buyer calendar ───────────────────────────────────────────────────────
-async def scan_calendar(page, buyer):
+# ── Scan and book buyer calendar ─────────────────────────────────────────────
+async def scan_and_book(page, buyer, message_text):
+    """
+    Visit buyer's calendar page. If a free slot is found, book it immediately.
+    Returns:
+      "sent"              — booked successfully
+      "no_free_slot"      — no free slot available
+      "no_calendar"       — calendar didn't load
+      ("locked", expiry_seconds, slot_text) — locked slot we're free for
+      "timeout" / "error" — failures
+    """
+    target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
+    try:
+        await page.goto(target, wait_until="domcontentloaded", timeout=15000)
+        try:
+            await page.wait_for_selector("div.fc-event", timeout=8000)
+        except PlaywrightTimeout:
+            await page.goto(target, wait_until="domcontentloaded", timeout=15000)
+            try:
+                await page.wait_for_selector("div.fc-event", timeout=8000)
+            except PlaywrightTimeout:
+                return "no_calendar"
+
+        # Check for free slot — book immediately while still on the page
+        free_slot = await page.query_selector("div.fc-event.stato-libero")
+        if free_slot:
+            return await _book_free_slot(page, free_slot, message_text)
+
+        # Check for locked slots where we are free
+        locked_slots = await page.query_selector_all("div.fc-event.stato-bloccato, div.fc-event[class*='locked']")
+        best_expiry = None
+        best_text   = ""
+
+        for slot in locked_slots:
+            try:
+                await slot.click()
+                try:
+                    await page.wait_for_selector("div.modal-dialog", timeout=4000)
+                except PlaywrightTimeout:
+                    continue
+
+                modal = await page.query_selector("div.modal-dialog")
+                if not modal:
+                    await page.keyboard.press("Escape")
+                    continue
+
+                modal_text = await modal.inner_text()
+
+                if "You: Free" not in modal_text:
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+                    continue
+
+                expiry_secs = parse_expiry_seconds(modal_text)
+                slot_text = modal_text.strip().split("\n")[0]
+
+                if expiry_secs is not None:
+                    if best_expiry is None or expiry_secs < best_expiry:
+                        best_expiry = expiry_secs
+                        best_text   = slot_text
+
+                cancel_btn = await page.query_selector("button:has-text('Cancel'), button:has-text('Close')")
+                if cancel_btn:
+                    await cancel_btn.click()
+                else:
+                    await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+
+            except Exception as e:
+                log.debug(f"Locked slot check error: {e}")
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+
+        if best_expiry is not None:
+            return ("locked", best_expiry, best_text)
+
+        return "no_free_slot"
+
+    except PlaywrightTimeout:
+        return "timeout"
+    except Exception as e:
+        log.error(f"scan_and_book error for {buyer.get('company','?')}: {e}")
+        return "error"
+
+
+async def _book_free_slot(page, free_slot, message_text):
+    """Click an already-located free slot element and complete the booking."""
+    try:
+        await free_slot.click()
+
+        try:
+            await page.wait_for_selector("div.modal-dialog", timeout=8000)
+        except PlaywrightTimeout:
+            await free_slot.click()
+            try:
+                await page.wait_for_selector("div.modal-dialog", timeout=5000)
+            except PlaywrightTimeout:
+                return "no_modal"
+
+        msg_area = await page.query_selector("textarea[name='msg']")
+        if msg_area:
+            await msg_area.fill(message_text)
+
+        submit = await page.query_selector(
+            "button[data-action='/ttg26/en/richiedi-appuntamento-ajax']"
+        )
+        if not submit:
+            return "no_submit"
+
+        await submit.click()
+
+        # Wait for confirm button (second click, ~4s countdown)
+        try:
+            confirm = await page.wait_for_selector(
+                "button.confirm-appointment, button:has-text('Confirm'), button[data-confirm]",
+                timeout=8000
+            )
+            if confirm:
+                await asyncio.sleep(4.5)
+                await confirm.click()
+                await page.wait_for_timeout(1000)
+        except PlaywrightTimeout:
+            pass
+
+        return "sent"
+
+    except PlaywrightTimeout:
+        return "timeout"
+    except Exception as e:
+        log.error(f"_book_free_slot error: {e}")
+        return "error"
     """
     Visit buyer's calendar page.
     Returns:
@@ -438,12 +569,9 @@ async def monitor_locked_slot(page, buyer, expiry_secs, message_text, cycle):
 
     deadline = datetime.now(CET) + timedelta(seconds=PRE_EXPIRY_WINDOW + 120)
     while datetime.now(CET) < deadline:
-        result = await scan_calendar(page, buyer)
-        if result[0] == "free":
-            log.info(f"  [{buyer['company']}] Slot freed — booking now!")
-            status = await book_slot(page, result[1], buyer, message_text)
-            # Note: book_slot expects page already on calendar — re-navigate
-            status = await full_book(page, buyer, message_text)
+        result = await scan_and_book(page, buyer, message_text)
+        if result == "sent":
+            status = "sent"
             if status == "sent":
                 write_log(cycle, buyer["msg_variant"], buyer["segment"],
                           buyer["id"], buyer["name"], buyer["company"],
@@ -462,7 +590,7 @@ async def monitor_locked_slot(page, buyer, expiry_secs, message_text, cycle):
                     )
                 )
                 return "sent"
-        elif result[0] in ("no_calendar", "error"):
+        elif result in ("no_calendar", "error"):
             break
         await asyncio.sleep(POLL_INTERVAL)
 
@@ -522,42 +650,34 @@ async def run_cycle(page, buyers, cycle_number, locked_queue):
         first_name   = (buyer["name"] or buyer["company"] or "there").split()[0]
         message_text = msg_template.format(name=first_name)
 
-        result = await scan_calendar(page, buyer)
+        result = await scan_and_book(page, buyer, message_text)
 
-        if result[0] == "free":
-            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → FREE SLOT — booking!")
-            # Page is already on the buyer's calendar — book directly without re-navigating
-            status = await book_slot(page, buyer, message_text)
-            if status == "no_free_slot":
-                # Slot disappeared — fall back to full re-navigate
-                status = await full_book(page, buyer, message_text)
+        if result == "sent":
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} \u2192 sent")
             write_log(cycle_number, variant_idx, buyer["segment"],
                       buyer["id"], buyer["name"], buyer["company"],
-                      buyer["country"], status)
-            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → {status}")
-            if status == "sent":
-                send_notification(
-                    subject=f"[BHI TTG] Meeting booked — {buyer['company']}",
-                    body=(
-                        f"A free slot has been booked.\n\n"
-                        f"Company: {buyer['company']}\n"
-                        f"Country: {buyer['country']}\n"
-                        f"Segment: {buyer['segment']}\n"
-                        f"Buyer ID: {buyer['id']}\n"
-                        f"Account: Best Holidays in Italy (BHI)\n"
-                        f"Time: {datetime.now(CET).strftime('%Y-%m-%d %H:%M CET')}"
-                    )
+                      buyer["country"], "sent")
+            send_notification(
+                subject=f"[BHI TTG] Meeting booked \u2014 {buyer['company']}",
+                body=(
+                    f"A free slot has been booked.\n\n"
+                    f"Company: {buyer['company']}\n"
+                    f"Country: {buyer['country']}\n"
+                    f"Segment: {buyer['segment']}\n"
+                    f"Buyer ID: {buyer['id']}\n"
+                    f"Account: Best Holidays in Italy (BHI)\n"
+                    f"Time: {datetime.now(CET).strftime('%Y-%m-%d %H:%M CET')}"
                 )
+            )
             no_cal_streak = 0
 
-        elif result[0] == "locked":
+        elif isinstance(result, tuple) and result[0] == "locked":
             expiry_secs = result[1]
             slot_text   = result[2] if len(result) > 2 else ""
-            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → LOCKED (expires in {expiry_secs}s)")
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} \u2192 LOCKED (expires in {expiry_secs}s)")
             write_log(cycle_number, variant_idx, buyer["segment"],
                       buyer["id"], buyer["name"], buyer["company"],
                       buyer["country"], "locked", f"expires_in={expiry_secs}s")
-            # Queue for monitoring if expiry is within 24 hours
             if expiry_secs < 86400:
                 locked_queue.append({
                     "buyer": buyer,
@@ -567,14 +687,13 @@ async def run_cycle(page, buyers, cycle_number, locked_queue):
                 })
             no_cal_streak = 0
 
-        elif result[0] == "no_calendar":
+        elif result == "no_calendar":
             no_cal_streak += 1
-            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → no_calendar")
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} \u2192 no_calendar")
 
         else:
             no_cal_streak = 0
-            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → {result[0]}")
-
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} \u2192 {result}")
         await asyncio.sleep(1.0)
 
     log.info(f"=== Cycle {cycle_number} complete ===")
