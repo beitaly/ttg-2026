@@ -157,7 +157,7 @@ def fetch_targets(csv_url):
         targets = {
             row["Buyer ID"].strip()
             for row in rows
-            if row.get("Target BDP", "").strip().upper() == "YES"
+            if row.get("Target", "").strip().upper() == "YES"
         }
         log.info(f"Target sheet: {len(targets)} buyers marked YES")
         return targets
