@@ -32,7 +32,6 @@ WINDOW_CLOSE = datetime(2026, 10, 8, 10, 0, 0, tzinfo=CET)
 LOG_FILE = Path("ttg_bdp_log.csv")
 
 SEGMENT_CATEGORIES = [
-    ("Luxury Travel Advisor", "26872093", 0),  # → Variant 1 (cultural/boutique)
     ("Travel Agency",         "4416943",  2),  # → Variant 3 (general TO)
     ("Tour Operator",         "4416957",  2),  # → Variant 3 (general TO)
     ("Wholesaler",            "4416945",  2),  # → Variant 3
@@ -609,6 +608,97 @@ async def monitor_locked_slot(page, buyer, expiry_secs, message_text, cycle):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+async def run_cycle(page, buyers, cycle_number, locked_queue):
+    """
+    Single pass through all target buyers.
+    - Books free slots immediately
+    - Queues locked slots for monitoring
+    - Sends Gmail on successful booking
+    """
+    targets = fetch_targets(TARGETS_CSV_URL)
+    if targets is not None:
+        filtered = [b for b in buyers if b["id"] in targets]
+        log.info(f"After target filter: {len(filtered)} buyers this cycle")
+    else:
+        filtered = buyers
+        log.info(f"No target filter — cycling all {len(filtered)} buyers")
+
+    log.info(f"=== CYCLE {cycle_number} | {len(filtered)} buyers ===")
+    no_cal_streak = 0
+
+    for i, buyer in enumerate(filtered):
+        if i > 0 and i % 50 == 0:
+            log.info(f"Session refresh at buyer {i+1}...")
+            try:
+                await login(page)
+                no_cal_streak = 0
+            except Exception as e:
+                log.error(f"Refresh failed: {e}")
+
+        if no_cal_streak >= 5:
+            log.info(f"Session likely expired (streak={no_cal_streak}), re-logging in...")
+            try:
+                await login(page)
+                no_cal_streak = 0
+            except Exception as e:
+                log.error(f"Refresh failed: {e}")
+
+        variant_idx  = buyer["msg_variant"] % len(MESSAGES)
+        msg_template = MESSAGES[variant_idx]
+        first_name   = (buyer["name"] or buyer["company"] or "there").split()[0]
+        message_text = msg_template.format(name=first_name)
+
+        result = await scan_and_book(page, buyer, message_text)
+
+        if result == "sent":
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} \u2192 sent")
+            write_log(cycle_number, variant_idx, buyer["segment"],
+                      buyer["id"], buyer["name"], buyer["company"],
+                      buyer["country"], "sent")
+            send_notification(
+                subject=f"[BDP TTG] Meeting booked \u2014 {buyer['company']}",
+                body=(
+                    f"A free slot has been booked.\n\n"
+                    f"Company: {buyer['company']}\n"
+                    f"Country: {buyer['country']}\n"
+                    f"Segment: {buyer['segment']}\n"
+                    f"Buyer ID: {buyer['id']}\n"
+                    f"Account: Borracce di Poesia / Discovery Puglia (BDP)\n"
+                    f"Time: {datetime.now(CET).strftime('%Y-%m-%d %H:%M CET')}"
+                )
+            )
+            no_cal_streak = 0
+
+        elif isinstance(result, tuple) and result[0] == "locked":
+            expiry_secs = result[1]
+            slot_text   = result[2] if len(result) > 2 else ""
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} \u2192 LOCKED (expires in {expiry_secs}s)")
+            write_log(cycle_number, variant_idx, buyer["segment"],
+                      buyer["id"], buyer["name"], buyer["company"],
+                      buyer["country"], "locked", f"expires_in={expiry_secs}s")
+            if expiry_secs < 86400:
+                locked_queue.append({
+                    "buyer": buyer,
+                    "expiry_secs": expiry_secs,
+                    "message_text": message_text,
+                    "queued_at": datetime.now(CET),
+                })
+            no_cal_streak = 0
+
+        elif result == "no_calendar":
+            no_cal_streak += 1
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} \u2192 no_calendar")
+
+        else:
+            no_cal_streak = 0
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} \u2192 {result}")
+        await asyncio.sleep(1.0)
+
+    log.info(f"=== Cycle {cycle_number} complete ===")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 async def main():
     init_log()
     now = datetime.now(CET)

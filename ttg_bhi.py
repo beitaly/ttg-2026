@@ -33,7 +33,6 @@ LOG_FILE = Path("ttg_bhi_log.csv")
 
 SEGMENT_CATEGORIES = [
     ("Tour Operator",         "4416957",  0),
-    ("Luxury Travel Advisor", "26872093", 1),
     ("Incentive House",       "4416956",  2),
     ("Travel Agency",         "4416943",  0),
     ("Wholesaler",            "4416945",  3),
