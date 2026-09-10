@@ -42,7 +42,7 @@ SEGMENT_CATEGORIES = [
 ]
 
 LETTERS = list("123ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-TARGETS_CSV_URL = "https://raw.githubusercontent.com/beitaly/ttg-2026/main/TTG%20BHI%20Targets%20-%20Sheet1.csv"
+TARGETS_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRHQCmsJR3P-XGEclu1V3FfVeGM8ONfC92BE9E1katK0wl73CBvvExl9OWIhP3Wr9jFqUWLmJs0svZD/pub?output=csv"
 
 # Polling interval between full cycles (seconds)
 CYCLE_INTERVAL = 600  # 10 minutes
