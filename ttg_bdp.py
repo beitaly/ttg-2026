@@ -208,15 +208,63 @@ async def scrape_buyers_by_segment(page):
                         seen_ids.add(buyer_id)
                         seg_count += 1
 
-                        # Contact info
-                        contact_el = await entry.query_selector("p.buyer-contact")
-                        contact = (await contact_el.inner_text()).strip() if contact_el else ""
-                        country_el = await entry.query_selector("span.country")
-                        country = (await country_el.inner_text()).strip() if country_el else ""
-                        website_el = await entry.query_selector("a[href^='http']:not([href*='bme.iegexpo'])")
-                        website = (await website_el.get_attribute("href") or "").strip() if website_el else ""
-                        address_el = await entry.query_selector("p.address")
-                        address = (await address_el.inner_text()).strip() if address_el else ""
+                        # Try extracting from search listing first
+                        contact, country, website, address = "", "", "", ""
+                        try:
+                            contact_el = await entry.query_selector("p.buyer-contact, .contact-name, .nome-cognome")
+                            if contact_el:
+                                contact = (await contact_el.inner_text()).strip()
+                            country_el = await entry.query_selector("span.country, .country-name, [class*='country']")
+                            if country_el:
+                                country = (await country_el.inner_text()).strip()
+                            website_el = await entry.query_selector("a[href^='http']:not([href*='bme.iegexpo']):not([href*='agenda'])")
+                            if website_el:
+                                website = (await website_el.get_attribute("href") or "").strip()
+                            address_el = await entry.query_selector("p.address, .indirizzo, [class*='address']")
+                            if address_el:
+                                address = (await address_el.inner_text()).strip()
+                        except Exception:
+                            pass
+
+                        # If key fields missing, visit the profile page
+                        if not country or not contact:
+                            try:
+                                profile_url = BASE_URL + href
+                                await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
+                                # Country
+                                if not country:
+                                    for sel in ["span.country", ".country", "[class*='country']", "td:has-text('Country') + td"]:
+                                        el = await page.query_selector(sel)
+                                        if el:
+                                            country = (await el.inner_text()).strip()
+                                            break
+                                # Contact
+                                if not contact:
+                                    for sel in [".nome-cognome", ".contact-name", "p.buyer-contact", ".referente"]:
+                                        el = await page.query_selector(sel)
+                                        if el:
+                                            contact = (await el.inner_text()).strip()
+                                            break
+                                # Website
+                                if not website:
+                                    el = await page.query_selector("a[href^='http']:not([href*='bme.iegexpo']):not([href*='agenda'])")
+                                    if el:
+                                        website = (await el.get_attribute("href") or "").strip()
+                                # Address
+                                if not address:
+                                    for sel in [".indirizzo", "p.address", "[class*='address']"]:
+                                        el = await page.query_selector(sel)
+                                        if el:
+                                            address = (await el.inner_text()).strip()
+                                            break
+                                # Go back to search results
+                                await page.go_back(wait_until="domcontentloaded", timeout=10000)
+                            except Exception as e:
+                                log.debug(f"Profile fetch error for {company}: {e}")
+                                try:
+                                    await page.goto(url, wait_until="domcontentloaded", timeout=12000)
+                                except Exception:
+                                    pass
 
                         log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|||{website}|{address}")
 
@@ -224,7 +272,7 @@ async def scrape_buyers_by_segment(page):
                             "id": buyer_id, "name": company, "company": company,
                             "country": country, "contact": contact,
                             "website": website, "address": address,
-                            "appt_url": BASE_URL + href,
+                            "appt_url": BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer_id,
                             "segment": seg_label, "msg_variant": msg_idx,
                         })
                     except Exception as e:
