@@ -1,7 +1,13 @@
 """
 TTG 2026 — Borracce di Poesia
-Appointment Request Automation Script v2
-Same structure as BHI v2 but with BDP credentials and messages.
+Appointment Request Automation v3
+
+Changes from v2:
+- Targeted polling only (buyers marked YES in GitHub CSV)
+- ~10-minute full cycle through targets
+- Locked slot expiry monitoring with 30s retry in 5-min pre-expiry window
+- Two-click booking confirmation
+- Gmail notification on successful booking
 """
 
 import asyncio
@@ -10,27 +16,21 @@ import csv
 import logging
 import os
 import re
+import smtplib
+from email.mime.text import MIMEText
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
-BASE_URL  = "https://bme.iegexpo.it"
-LOGIN_URL = "https://bme.iegexpo.it/ttg26/en/login"
-BUYER_URL = f"{BASE_URL}/ttg26/en/ricerca-buyer"
+# ── Configuration ─────────────────────────────────────────────────────────────
 
-CREDENTIALS = {
-    "email":    os.environ.get("BDP_EMAIL", ""),
-    "password": os.environ.get("BDP_PASSWORD", ""),
-}
+BASE_URL  = "https://bme.iegexpo.it"
 
 CET = timezone(timedelta(hours=1))
-WINDOW_OPEN  = datetime(2026, 9,  8, 16, 0, 0, tzinfo=CET)
 WINDOW_CLOSE = datetime(2026, 10, 8, 10, 0, 0, tzinfo=CET)
-WAVE_INTERVAL_HOURS = 1
 
 LOG_FILE = Path("ttg_bdp_log.csv")
 
-# BDP targets cultural/boutique agents first, then outdoor/active, then general TOs
 SEGMENT_CATEGORIES = [
     ("Luxury Travel Advisor", "26872093", 0),  # → Variant 1 (cultural/boutique)
     ("Travel Agency",         "4416943",  2),  # → Variant 3 (general TO)
@@ -42,11 +42,13 @@ SEGMENT_CATEGORIES = [
 LETTERS = list("123ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 TARGETS_CSV_URL = "https://raw.githubusercontent.com/beitaly/ttg-2026/main/TTG%20BDP%20Targets%20-%20Sheet1.csv"
 
-# Priority countries
-PRIORITY_COUNTRIES = {
-    "France", "United Kingdom", "United States", "Canada",
-    "Australia", "Germany", "Spain", "Brazil"
-}
+# Polling interval between full cycles (seconds)
+CYCLE_INTERVAL = 600  # 10 minutes
+
+# Gmail config
+GMAIL_USER      = os.environ.get("GMAIL_USER", "")
+GMAIL_APP_PASS  = os.environ.get("GMAIL_APP_PASSWORD", "")
+NOTIFY_EMAIL    = os.environ.get("NOTIFY_EMAIL", "operations@bestholidaysinitaly.com")
 
 MESSAGES = [
     # 0 — Boutique & Cultural Agents
@@ -78,6 +80,7 @@ MESSAGES = [
     ),
 ]
 
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -93,46 +96,61 @@ def init_log():
     if not LOG_FILE.exists():
         with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
-                "timestamp", "wave", "variant_index", "segment",
+                "timestamp", "cycle", "variant_index", "segment",
                 "buyer_id", "buyer_name", "buyer_company", "buyer_country",
                 "status", "notes"
             ])
 
 
-def write_log(wave, variant_idx, segment, buyer_id, buyer_name,
+def write_log(cycle, variant_idx, segment, buyer_id, buyer_name,
               buyer_company, buyer_country, status, notes=""):
     with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow([
             datetime.now(CET).isoformat(),
-            wave, variant_idx, segment,
+            cycle, variant_idx, segment,
             buyer_id, buyer_name, buyer_company, buyer_country,
             status, notes
         ])
 
 
+# ── Gmail notification ────────────────────────────────────────────────────────
+def send_notification(subject, body):
+    if not GMAIL_USER or not GMAIL_APP_PASS:
+        log.warning("Gmail credentials not set — skipping notification")
+        return
+    try:
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"]    = GMAIL_USER
+        msg["To"]      = NOTIFY_EMAIL
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(GMAIL_USER, GMAIL_APP_PASS)
+            smtp.sendmail(GMAIL_USER, NOTIFY_EMAIL, msg.as_string())
+        log.info(f"Notification sent: {subject}")
+    except Exception as e:
+        log.error(f"Notification failed: {e}")
+
+
+# ── Login ─────────────────────────────────────────────────────────────────────
 async def login(page):
     log.info("Logging in via autologin URL...")
     autologin_url = os.environ.get("BDP_AUTOLOGIN_URL", "")
     if not autologin_url:
-        raise Exception("BDP_AUTOLOGIN_URL environment variable not set")
+        raise Exception("BDP_AUTOLOGIN_URL not set")
     await page.goto(autologin_url, wait_until="networkidle", timeout=30000)
     log.info(f"Post-autologin URL: {page.url}")
     if "login" in page.url and "autologin" not in page.url:
-        raise Exception(f"Autologin failed — still on login page: {page.url}")
+        raise Exception(f"Autologin failed: {page.url}")
     log.info("Login successful")
 
 
+# ── Target CSV ────────────────────────────────────────────────────────────────
 def fetch_targets(csv_url):
-    """
-    Fetch the target CSV from GitHub. Returns:
-    - None  → sheet is empty or unreachable, target ALL buyers
-    - set() → only target buyer IDs in this set (marked YES)
-    """
-    import urllib.request, csv, io
+    import urllib.request, csv as csv_mod, io
     try:
         with urllib.request.urlopen(csv_url, timeout=10) as r:
             content = r.read().decode("utf-8")
-        reader = csv.DictReader(io.StringIO(content))
+        reader = csv_mod.DictReader(io.StringIO(content))
         rows = list(reader)
         if not rows:
             log.info("Target sheet empty — targeting all buyers")
@@ -142,12 +160,14 @@ def fetch_targets(csv_url):
             for row in rows
             if row.get("Target", "").strip().upper() == "YES"
         }
-        log.info(f"Target sheet loaded: {len(targets)} buyers marked YES")
+        log.info(f"Target sheet: {len(targets)} buyers marked YES")
         return targets
     except Exception as e:
-        log.warning(f"Could not fetch target sheet: {e} — targeting all buyers")
+        log.warning(f"Could not fetch targets: {e} — targeting all buyers")
         return None
 
+
+# ── Buyer scrape ──────────────────────────────────────────────────────────────
 async def scrape_buyers_by_segment(page):
     all_buyers = []
     seen_ids   = set()
@@ -168,7 +188,6 @@ async def scrape_buyers_by_segment(page):
                     log.warning(f"  Timeout {letter} p{page_num}: {e}")
                     break
 
-                # Confirmed selector from live page HTML
                 entries = await page.query_selector_all("li.search-result")
                 if not entries:
                     break
@@ -180,57 +199,30 @@ async def scrape_buyers_by_segment(page):
                             continue
                         href    = await link.get_attribute("href")
                         company = (await link.inner_text()).strip()
-                        # Extract user ID: /ttg26/en/agenda-appuntamenti?user=12345
-                        uid_match = re.search("user=([0-9]+)", href or "")
-                        buyer_id  = uid_match.group(1) if uid_match else ""
-                        if not buyer_id or buyer_id in seen_ids:
+                        uid_match = re.search(r"user=([0-9]+)", href or "")
+                        if not uid_match:
                             continue
-                        country_el = await entry.query_selector("p.risultati-info span")
-                        country = (await country_el.inner_text()).strip() if country_el else ""
+                        buyer_id = uid_match.group(1)
+                        if buyer_id in seen_ids:
+                            continue
                         seen_ids.add(buyer_id)
                         seg_count += 1
 
-                        # Fetch buyer profile page for full details
-                        contact, website, address, email, phone = "", "", "", "", ""
-                        try:
-                            profile_url = BASE_URL + f"/ttg26/en/agenda-appuntamenti?user={buyer_id}"
-                            await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
+                        # Contact info
+                        contact_el = await entry.query_selector("p.buyer-contact")
+                        contact = (await contact_el.inner_text()).strip() if contact_el else ""
+                        country_el = await entry.query_selector("span.country")
+                        country = (await country_el.inner_text()).strip() if country_el else ""
+                        website_el = await entry.query_selector("a[href^='http']:not([href*='bme.iegexpo'])")
+                        website = (await website_el.get_attribute("href") or "").strip() if website_el else ""
+                        address_el = await entry.query_selector("p.address")
+                        address = (await address_el.inner_text()).strip() if address_el else ""
 
-                            # Contact name: "Buyer attending: Ms. Kseniya Forte"
-                            for sel in ["header span", ".profile-env header span"]:
-                                el = await page.query_selector(sel)
-                                if el:
-                                    txt = (await el.inner_text()).strip()
-                                    if "attending" in txt.lower() or "buyer" in txt.lower():
-                                        contact = txt.replace("Buyer attending:", "").strip()
-                                        break
-
-                            # Website
-                            el = await page.query_selector("ul.user-details a[href*='http']")
-                            if el:
-                                website = (await el.get_attribute("href") or "").strip()
-
-                            # Address
-                            el = await page.query_selector("ul.user-details li div")
-                            if el:
-                                address = " ".join((await el.inner_text()).split()).strip()
-
-                            # Email & phone not available on this page (platform withholds until appointment confirmed)
-
-                            await page.goto(url, wait_until="domcontentloaded", timeout=12000)
-                        except Exception as e:
-                            log.debug(f"Profile fetch error for {buyer_id}: {e}")
-                            try:
-                                await page.goto(url, wait_until="domcontentloaded", timeout=12000)
-                            except Exception:
-                                pass
-
-                        log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|{email}|{phone}|{website}|{address[:60]}")
+                        log.info(f"BUYER_DETAIL|{buyer_id}|{company}|{country}|{seg_label}|{contact}|||{website}|{address}")
 
                         all_buyers.append({
                             "id": buyer_id, "name": company, "company": company,
-                            "country": country,
-                            "contact": contact, "email": email, "phone": phone,
+                            "country": country, "contact": contact,
                             "website": website, "address": address,
                             "appt_url": BASE_URL + href,
                             "segment": seg_label, "msg_variant": msg_idx,
@@ -238,7 +230,6 @@ async def scrape_buyers_by_segment(page):
                     except Exception as e:
                         log.debug(f"Entry parse error: {e}")
 
-                # Pagination
                 next_link = await page.query_selector("ul.pagination li.last a")
                 if next_link:
                     next_href = await next_link.get_attribute("href") or ""
@@ -254,39 +245,129 @@ async def scrape_buyers_by_segment(page):
 
         log.info(f"Segment '{seg_label}': {seg_count} buyers")
 
-    final, seen2 = [], set()
-    for b in all_buyers:
-        if b["id"] not in seen2:
-            seen2.add(b["id"])
-            final.append(b)
-    log.info(f"Total unique buyers: {len(final)}")
-    return final
+    log.info(f"Total unique buyers: {len(all_buyers)}")
+    return all_buyers
 
 
-async def send_request(page, buyer, message_text):
+# ── Parse locked slot expiry ──────────────────────────────────────────────────
+def parse_expiry_seconds(modal_text):
+    """
+    Parse 'Expires in: X days Y hours Z minutes W seconds' from modal text.
+    Returns total seconds until expiry, or None if not found.
+    """
+    m = re.search(
+        r"Expires in:\s*(\d+)\s*days?\s*(\d+)\s*hours?\s*(\d+)\s*minutes?\s*(\d+)\s*seconds?",
+        modal_text, re.IGNORECASE
+    )
+    if not m:
+        return None
+    d, h, mi, s = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    return d * 86400 + h * 3600 + mi * 60 + s
+
+
+# ── Scan buyer calendar ───────────────────────────────────────────────────────
+async def scan_calendar(page, buyer):
+    """
+    Visit buyer's calendar page.
+    Returns:
+      ("free", slot_element)           — free slot found, ready to book
+      ("locked", expiry_seconds, slot_text) — locked slot, will free up
+      ("no_free_slot", None)
+      ("no_calendar", None)
+      ("timeout", None)
+    """
+    target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
     try:
-        target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
         await page.goto(target, wait_until="domcontentloaded", timeout=15000)
-
-        # Wait for FullCalendar — 8s first attempt
         try:
             await page.wait_for_selector("div.fc-event", timeout=8000)
         except PlaywrightTimeout:
-            # One retry with a fresh navigation
             await page.goto(target, wait_until="domcontentloaded", timeout=15000)
             try:
                 await page.wait_for_selector("div.fc-event", timeout=8000)
             except PlaywrightTimeout:
-                return "no_calendar"
+                return ("no_calendar", None)
 
-        # Find free slot
+        # Check for free slot first
+        free_slot = await page.query_selector("div.fc-event.stato-libero")
+        if free_slot:
+            return ("free", free_slot)
+
+        # Check for locked slots (stato-bloccato or similar class)
+        locked_slots = await page.query_selector_all("div.fc-event.stato-bloccato, div.fc-event[class*='locked']")
+        best_expiry = None
+        best_text   = ""
+
+        for slot in locked_slots:
+            try:
+                await slot.click()
+                try:
+                    await page.wait_for_selector("div.modal-dialog", timeout=4000)
+                except PlaywrightTimeout:
+                    continue
+
+                modal = await page.query_selector("div.modal-dialog")
+                if not modal:
+                    await page.keyboard.press("Escape")
+                    continue
+
+                modal_text = await modal.inner_text()
+
+                # Only interested if "You: Free" — means WE are free in this slot
+                if "You: Free" not in modal_text:
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+                    continue
+
+                expiry_secs = parse_expiry_seconds(modal_text)
+                slot_text = modal_text.strip().split("\n")[0]
+
+                if expiry_secs is not None:
+                    if best_expiry is None or expiry_secs < best_expiry:
+                        best_expiry = expiry_secs
+                        best_text   = slot_text
+
+                # Close modal
+                cancel_btn = await page.query_selector("button:has-text('Cancel'), button:has-text('Close')")
+                if cancel_btn:
+                    await cancel_btn.click()
+                else:
+                    await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+
+            except Exception as e:
+                log.debug(f"Locked slot check error: {e}")
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+
+        if best_expiry is not None:
+            return ("locked", best_expiry, best_text)
+
+        return ("no_free_slot", None)
+
+    except PlaywrightTimeout:
+        return ("timeout", None)
+    except Exception as e:
+        log.error(f"scan_calendar error for {buyer.get('company','?')}: {e}")
+        return ("error", None)
+
+
+# ── Book a slot ───────────────────────────────────────────────────────────────
+async def book_slot(page, buyer, message_text):
+    """
+    Assumes we're already on the buyer's calendar page with a free slot visible.
+    Clicks free slot → fills message → clicks submit → waits for confirm button → clicks confirm.
+    Returns 'sent' or error string.
+    """
+    try:
         free_slot = await page.query_selector("div.fc-event.stato-libero")
         if not free_slot:
             return "no_free_slot"
 
         await free_slot.click()
 
-        # Wait for modal
         try:
             await page.wait_for_selector("div.modal-dialog", timeout=8000)
         except PlaywrightTimeout:
@@ -296,98 +377,208 @@ async def send_request(page, buyer, message_text):
             except PlaywrightTimeout:
                 return "no_modal"
 
-        # Fill message
         msg_area = await page.query_selector("textarea[name='msg']")
         if msg_area:
             await msg_area.fill(message_text)
 
-        # Submit
         submit = await page.query_selector(
             "button[data-action='/ttg26/en/richiedi-appuntamento-ajax']"
         )
-        if submit:
-            await submit.click()
-            await page.wait_for_timeout(1000)
-            return "sent"
+        if not submit:
+            return "no_submit"
 
-        return "no_submit"
+        await submit.click()
+
+        # Wait for confirm button (second click required, countdown ~4s)
+        try:
+            confirm = await page.wait_for_selector(
+                "button.confirm-appointment, button:has-text('Confirm'), button[data-confirm]",
+                timeout=8000
+            )
+            if confirm:
+                await asyncio.sleep(4.5)  # wait out the countdown
+                await confirm.click()
+                await page.wait_for_timeout(1000)
+        except PlaywrightTimeout:
+            # Some flows don't have a second confirm step — treat as sent
+            pass
+
+        return "sent"
 
     except PlaywrightTimeout:
         return "timeout"
     except Exception as e:
-        log.error(f"Error for {buyer.get('company','?')}: {e}")
+        log.error(f"book_slot error: {e}")
         return "error"
 
 
-async def run_wave(page, buyers, wave_number):
-    """Cycle through message variants, refreshing login every 50 buyers."""
-    wave_shift = (wave_number - 1) % len(MESSAGES)
-    # Load target list from GitHub sheet
+# ── Retry locked slot ─────────────────────────────────────────────────────────
+async def monitor_locked_slot(page, buyer, expiry_secs, message_text, cycle):
+    """
+    Wait until ~5 minutes before expiry, then poll every 30s until slot frees.
+    Books immediately when stato-libero appears.
+    """
+    PRE_EXPIRY_WINDOW = 300  # 5 minutes
+    POLL_INTERVAL     = 30   # seconds
+
+    wait_until_poll = expiry_secs - PRE_EXPIRY_WINDOW
+    if wait_until_poll > 0:
+        log.info(f"  [{buyer['company']}] Locked slot expires in {expiry_secs}s — "
+                 f"will start polling in {wait_until_poll}s")
+        await asyncio.sleep(wait_until_poll)
+
+    log.info(f"  [{buyer['company']}] Entering 30s polling window (slot expires ~{PRE_EXPIRY_WINDOW}s)")
+
+    deadline = datetime.now(CET) + timedelta(seconds=PRE_EXPIRY_WINDOW + 120)
+    while datetime.now(CET) < deadline:
+        result = await scan_calendar(page, buyer)
+        if result[0] == "free":
+            log.info(f"  [{buyer['company']}] Slot freed — booking now!")
+            status = await book_slot(page, result[1], buyer, message_text)
+            # Note: book_slot expects page already on calendar — re-navigate
+            status = await full_book(page, buyer, message_text)
+            if status == "sent":
+                write_log(cycle, buyer["msg_variant"], buyer["segment"],
+                          buyer["id"], buyer["name"], buyer["company"],
+                          buyer["country"], "sent", "locked→freed")
+                log.info(f"  [{buyer['company']}] BOOKED (was locked)")
+                send_notification(
+                    subject=f"[BDP TTG] Meeting booked — {buyer['company']}",
+                    body=(
+                        f"A previously locked slot has freed up and been booked.\n\n"
+                        f"Company: {buyer['company']}\n"
+                        f"Country: {buyer['country']}\n"
+                        f"Segment: {buyer['segment']}\n"
+                        f"Buyer ID: {buyer['id']}\n"
+                        f"Account: Borracce di Poesia / Discovery Puglia (BDP)\n"
+                        f"Time: {datetime.now(CET).strftime('%Y-%m-%d %H:%M CET')}"
+                    )
+                )
+                return "sent"
+        elif result[0] in ("no_calendar", "error"):
+            break
+        await asyncio.sleep(POLL_INTERVAL)
+
+    log.info(f"  [{buyer['company']}] Locked slot did not free up in time")
+    return "locked_expired"
+
+
+async def full_book(page, buyer, message_text):
+    """Navigate to buyer calendar and attempt booking."""
+    target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
+    await page.goto(target, wait_until="domcontentloaded", timeout=15000)
+    try:
+        await page.wait_for_selector("div.fc-event", timeout=8000)
+    except PlaywrightTimeout:
+        return "no_calendar"
+    return await book_slot(page, buyer, message_text)
+
+
+# ── Main polling cycle ────────────────────────────────────────────────────────
+async def run_cycle(page, buyers, cycle_number, locked_queue):
+    """
+    Single pass through all target buyers.
+    - Books free slots immediately
+    - Queues locked slots for monitoring
+    - Sends Gmail on successful booking
+    """
     targets = fetch_targets(TARGETS_CSV_URL)
     if targets is not None:
-        buyers = [b for b in buyers if b["id"] in targets]
-        log.info(f"After target filter: {len(buyers)} buyers to contact this wave")
-    log.info(f"=== WAVE {wave_number} | shift={wave_shift} | {len(buyers)} buyers ===")
-    no_calendar_streak = 0
+        filtered = [b for b in buyers if b["id"] in targets]
+        log.info(f"After target filter: {len(filtered)} buyers this cycle")
+    else:
+        filtered = buyers
+        log.info(f"No target filter — cycling all {len(filtered)} buyers")
 
-    for i, buyer in enumerate(buyers):
-        # Re-login every 50 buyers to prevent session expiry
+    log.info(f"=== CYCLE {cycle_number} | {len(filtered)} buyers ===")
+    no_cal_streak = 0
+
+    for i, buyer in enumerate(filtered):
         if i > 0 and i % 50 == 0:
             log.info(f"Session refresh at buyer {i+1}...")
             try:
                 await login(page)
-                no_calendar_streak = 0
-                log.info("Session refreshed")
+                no_cal_streak = 0
             except Exception as e:
-                log.error(f"Session refresh failed: {e}")
+                log.error(f"Refresh failed: {e}")
 
-        # Also re-login if we hit 5 consecutive no_calendar results
-        if no_calendar_streak >= 5:
-            log.info(f"Session likely expired (streak={no_calendar_streak}), re-logging in...")
+        if no_cal_streak >= 5:
+            log.info(f"Session likely expired (streak={no_cal_streak}), re-logging in...")
             try:
                 await login(page)
-                no_calendar_streak = 0
-                log.info("Session refreshed")
+                no_cal_streak = 0
             except Exception as e:
-                log.error(f"Session refresh failed: {e}")
+                log.error(f"Refresh failed: {e}")
 
-        variant_idx  = (buyer["msg_variant"] + wave_shift) % len(MESSAGES)
+        variant_idx  = buyer["msg_variant"] % len(MESSAGES)
         msg_template = MESSAGES[variant_idx]
         first_name   = (buyer["name"] or buyer["company"] or "there").split()[0]
         message_text = msg_template.format(name=first_name)
 
-        status = await send_request(page, buyer, message_text)
+        result = await scan_calendar(page, buyer)
 
-        if status == "no_calendar":
-            no_calendar_streak += 1
+        if result[0] == "free":
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → FREE SLOT — booking!")
+            status = await full_book(page, buyer, message_text)
+            write_log(cycle_number, variant_idx, buyer["segment"],
+                      buyer["id"], buyer["name"], buyer["company"],
+                      buyer["country"], status)
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → {status}")
+            if status == "sent":
+                send_notification(
+                    subject=f"[BDP TTG] Meeting booked — {buyer['company']}",
+                    body=(
+                        f"A free slot has been booked.\n\n"
+                        f"Company: {buyer['company']}\n"
+                        f"Country: {buyer['country']}\n"
+                        f"Segment: {buyer['segment']}\n"
+                        f"Buyer ID: {buyer['id']}\n"
+                        f"Account: Borracce di Poesia / Discovery Puglia (BDP)\n"
+                        f"Time: {datetime.now(CET).strftime('%Y-%m-%d %H:%M CET')}"
+                    )
+                )
+            no_cal_streak = 0
+
+        elif result[0] == "locked":
+            expiry_secs = result[1]
+            slot_text   = result[2] if len(result) > 2 else ""
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → LOCKED (expires in {expiry_secs}s)")
+            write_log(cycle_number, variant_idx, buyer["segment"],
+                      buyer["id"], buyer["name"], buyer["company"],
+                      buyer["country"], "locked", f"expires_in={expiry_secs}s")
+            # Queue for monitoring if expiry is within 24 hours
+            if expiry_secs < 86400:
+                locked_queue.append({
+                    "buyer": buyer,
+                    "expiry_secs": expiry_secs,
+                    "message_text": message_text,
+                    "queued_at": datetime.now(CET),
+                })
+            no_cal_streak = 0
+
+        elif result[0] == "no_calendar":
+            no_cal_streak += 1
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → no_calendar")
+
         else:
-            no_calendar_streak = 0
+            no_cal_streak = 0
+            log.info(f"  [{i+1}/{len(filtered)}] {buyer['company']} → {result[0]}")
 
-        write_log(
-            wave=wave_number, variant_idx=variant_idx, segment=buyer["segment"],
-            buyer_id=buyer["id"], buyer_name=buyer["name"],
-            buyer_company=buyer["company"], buyer_country=buyer["country"],
-            status=status,
-        )
-        log.info(f"  [{i+1}/{len(buyers)}] {buyer['company']} ({buyer['segment']}) → {status}")
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0)
 
-    log.info(f"=== Wave {wave_number} complete ===")
+    log.info(f"=== Cycle {cycle_number} complete ===")
 
 
+# ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
     init_log()
     now = datetime.now(CET)
-    log.info(f"BDP script started at {now.isoformat()}")
-
-    if now < WINDOW_OPEN:
-        wait_secs = (WINDOW_OPEN - now).total_seconds()
-        log.info(f"Waiting {wait_secs:.0f}s...")
-        await asyncio.sleep(wait_secs)
+    log.info(f"BDP v3 started at {now.isoformat()}")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        page    = await (await browser.new_context()).new_page()
+        context = await browser.new_context()
+        page    = await context.new_page()
 
         await login(page)
         buyers = await scrape_buyers_by_segment(page)
@@ -397,29 +588,59 @@ async def main():
             await browser.close()
             return
 
-        wave = 1
+        cycle = 1
+        locked_queue = []  # list of dicts: {buyer, expiry_secs, message_text, queued_at}
+
         while datetime.now(CET) < WINDOW_CLOSE:
-            wave_start = datetime.now(CET)
-            try:
-                if wave > 1:
+            cycle_start = datetime.now(CET)
+
+            # Re-scrape every 10 cycles to catch new buyers
+            if cycle > 1 and cycle % 10 == 0:
+                log.info("Refreshing buyer list...")
+                try:
                     buyers = await scrape_buyers_by_segment(page)
-                await run_wave(page, buyers, wave)
+                except Exception as e:
+                    log.error(f"Scrape refresh failed: {e}")
+
+            try:
+                await run_cycle(page, buyers, cycle, locked_queue)
             except Exception as e:
-                log.error(f"Wave {wave} error: {e}")
+                log.error(f"Cycle {cycle} error: {e}")
                 try:
                     await login(page)
                 except Exception:
                     pass
 
-            wave += 1
-            next_wave = wave_start + timedelta(hours=WAVE_INTERVAL_HOURS)
-            if next_wave >= WINDOW_CLOSE:
-                break
-            wait_secs = (next_wave - datetime.now(CET)).total_seconds()
+            # Process locked queue — launch monitors for slots expiring soon
+            now = datetime.now(CET)
+            still_queued = []
+            for item in locked_queue:
+                elapsed = (now - item["queued_at"]).total_seconds()
+                remaining = item["expiry_secs"] - elapsed
+                if remaining <= 0:
+                    log.info(f"Locked slot for {item['buyer']['company']} already expired — skipping")
+                    continue
+                if remaining < 86400:
+                    log.info(f"Launching locked-slot monitor for {item['buyer']['company']} "
+                             f"({remaining:.0f}s remaining)")
+                    asyncio.create_task(
+                        monitor_locked_slot(
+                            page, item["buyer"], remaining,
+                            item["message_text"], cycle
+                        )
+                    )
+                else:
+                    still_queued.append(item)
+            locked_queue = still_queued
+
+            cycle += 1
+            elapsed_secs = (datetime.now(CET) - cycle_start).total_seconds()
+            wait_secs = max(0, CYCLE_INTERVAL - elapsed_secs)
             if wait_secs > 0:
+                log.info(f"Cycle done in {elapsed_secs:.0f}s — next cycle in {wait_secs:.0f}s")
                 await asyncio.sleep(wait_secs)
 
-        log.info("BDP script complete.")
+        log.info("Window closed. BDP v3 complete.")
         await browser.close()
 
 
