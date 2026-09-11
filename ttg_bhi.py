@@ -341,18 +341,21 @@ async def scan_and_book(page, buyer, message_text):
     try:
         await page.goto(target, wait_until="domcontentloaded", timeout=10000)
 
-        # Wait for calendar to load AND navigate to fair week (Oct 14)
-        # FullCalendar calls gotoDate after initial render, so we must wait
-        # for a fc-event that belongs to October (not current week)
+        # Wait for FullCalendar to navigate to Oct 14 and render fair-week events.
+        # We wait for any stato-* event (free/busy/locked) which only appear after gotoDate.
         try:
-            await page.wait_for_selector("div.fc-event", timeout=8000)
-            # Give FullCalendar time to execute gotoDate and re-render
-            await asyncio.sleep(1.5)
+            await page.wait_for_selector(
+                "div.fc-event.stato-libero, div.fc-event.stato-occupato, div.fc-event.stato-opzionato",
+                timeout=10000
+            )
         except PlaywrightTimeout:
+            # Try once more
             await page.goto(target, wait_until="domcontentloaded", timeout=10000)
             try:
-                await page.wait_for_selector("div.fc-event", timeout=8000)
-                await asyncio.sleep(1.5)
+                await page.wait_for_selector(
+                    "div.fc-event.stato-libero, div.fc-event.stato-occupato, div.fc-event.stato-opzionato",
+                    timeout=10000
+                )
             except PlaywrightTimeout:
                 return "no_calendar"
 

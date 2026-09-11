@@ -332,13 +332,17 @@ async def scan_and_book(page, buyer, message_text):
     try:
         await page.goto(target, wait_until="domcontentloaded", timeout=10000)
         try:
-            await page.wait_for_selector("div.fc-event", timeout=8000)
-            await asyncio.sleep(1.5)
+            await page.wait_for_selector(
+                "div.fc-event.stato-libero, div.fc-event.stato-occupato, div.fc-event.stato-opzionato",
+                timeout=10000
+            )
         except PlaywrightTimeout:
             await page.goto(target, wait_until="domcontentloaded", timeout=10000)
             try:
-                await page.wait_for_selector("div.fc-event", timeout=8000)
-                await asyncio.sleep(1.5)
+                await page.wait_for_selector(
+                    "div.fc-event.stato-libero, div.fc-event.stato-occupato, div.fc-event.stato-opzionato",
+                    timeout=10000
+                )
             except PlaywrightTimeout:
                 return "no_calendar"
 
