@@ -624,7 +624,23 @@ async def run_cycle(page, buyers, cycle_number, locked_queue):
     """
     targets = fetch_targets(TARGETS_CSV_URL)
     if targets is not None:
-        filtered = [b for b in buyers if b["id"] in targets]
+        # Build buyer list directly from CSV — don't restrict to scraped buyers
+        # Any ID in CSV gets a diary URL constructed directly
+        scraped_index = {b["id"]: b for b in buyers}
+        filtered = []
+        for buyer_id, msg_variant in targets.items():
+            if buyer_id in scraped_index:
+                filtered.append(scraped_index[buyer_id])
+            else:
+                # Buyer not in scraped list — construct minimal entry
+                filtered.append({
+                    "id": buyer_id,
+                    "company": buyer_id,
+                    "name": "",
+                    "segment": "Unknown",
+                    "msg_variant": hash(buyer_id) % len(MESSAGES),
+                    "appt_url": BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer_id,
+                })
         log.info(f"After target filter: {len(filtered)} buyers this cycle")
     else:
         filtered = buyers
