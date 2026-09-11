@@ -639,6 +639,8 @@ async def run_cycle(page, buyers, cycle_number, locked_queue):
                     "company": buyer_id,
                     "name": "",
                     "segment": "Unknown",
+                    "country": "",
+                    "contact": "",
                     "msg_variant": hash(buyer_id) % len(MESSAGES),
                     "appt_url": BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer_id,
                 })
