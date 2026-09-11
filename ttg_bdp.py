@@ -627,7 +627,7 @@ async def run_cycle(page, buyers, cycle_number, locked_queue):
         # Build buyer list directly from CSV — don't restrict to scraped buyers
         scraped_index = {b["id"]: b for b in buyers}
         filtered = []
-        for buyer_id, msg_variant in targets.items():
+        for buyer_id in targets:
             if buyer_id in scraped_index:
                 filtered.append(scraped_index[buyer_id])
             else:
