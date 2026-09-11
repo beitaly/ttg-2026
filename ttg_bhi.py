@@ -340,12 +340,19 @@ async def scan_and_book(page, buyer, message_text):
     target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
     try:
         await page.goto(target, wait_until="domcontentloaded", timeout=10000)
+
+        # Wait for calendar to load AND navigate to fair week (Oct 14)
+        # FullCalendar calls gotoDate after initial render, so we must wait
+        # for a fc-event that belongs to October (not current week)
         try:
             await page.wait_for_selector("div.fc-event", timeout=8000)
+            # Give FullCalendar time to execute gotoDate and re-render
+            await asyncio.sleep(1.5)
         except PlaywrightTimeout:
             await page.goto(target, wait_until="domcontentloaded", timeout=10000)
             try:
                 await page.wait_for_selector("div.fc-event", timeout=8000)
+                await asyncio.sleep(1.5)
             except PlaywrightTimeout:
                 return "no_calendar"
 
@@ -426,10 +433,12 @@ async def _book_free_slot(page, free_slot, message_text):
         await page.goto(target, wait_until="domcontentloaded", timeout=10000)
         try:
             await page.wait_for_selector("div.fc-event", timeout=8000)
+            await asyncio.sleep(1.5)
         except PlaywrightTimeout:
             await page.goto(target, wait_until="domcontentloaded", timeout=10000)
             try:
                 await page.wait_for_selector("div.fc-event", timeout=8000)
+                await asyncio.sleep(1.5)
             except PlaywrightTimeout:
                 return ("no_calendar", None)
 
