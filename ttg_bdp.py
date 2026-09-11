@@ -167,6 +167,7 @@ def fetch_targets(csv_url):
         if not rows:
             log.info("Target sheet empty — targeting all buyers")
             return None
+        rows = [{k.strip(): v for k, v in row.items()} for row in rows]
         targets = {
             row["Buyer ID"].strip()
             for row in rows
