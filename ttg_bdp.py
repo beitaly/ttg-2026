@@ -336,6 +336,7 @@ async def scan_and_book(page, buyer, message_text):
                 "div.fc-event.stato-libero, div.fc-event.stato-occupato, div.fc-event.stato-opzionato",
                 timeout=10000
             )
+            await asyncio.sleep(2)  # wait for all 3 fair days to fully render
         except PlaywrightTimeout:
             await page.goto(target, wait_until="domcontentloaded", timeout=10000)
             try:
@@ -343,11 +344,12 @@ async def scan_and_book(page, buyer, message_text):
                     "div.fc-event.stato-libero, div.fc-event.stato-occupato, div.fc-event.stato-opzionato",
                     timeout=10000
                 )
+                await asyncio.sleep(2)
             except PlaywrightTimeout:
                 return "no_calendar"
 
         # Check for free slot — book immediately while still on the page
-        free_slot = await page.query_selector("td.stato-libero, div.fc-event.stato-libero")
+        free_slot = await page.query_selector("div.fc-event.stato-libero")
         if free_slot:
             return await _book_free_slot(page, free_slot, message_text)
 
@@ -430,7 +432,7 @@ async def _book_free_slot(page, free_slot, message_text):
                 return ("no_calendar", None)
 
         # Check for free slot first
-        free_slot = await page.query_selector("td.stato-libero, div.fc-event.stato-libero")
+        free_slot = await page.query_selector("div.fc-event.stato-libero")
         if free_slot:
             return ("free", free_slot)
 
@@ -503,7 +505,7 @@ async def book_slot(page, buyer, message_text):
     Returns 'sent' or error string.
     """
     try:
-        free_slot = await page.query_selector("td.stato-libero, div.fc-event.stato-libero")
+        free_slot = await page.query_selector("div.fc-event.stato-libero")
         if not free_slot:
             return "no_free_slot"
 
