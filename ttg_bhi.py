@@ -374,15 +374,20 @@ async def scan_and_book(page, buyer, message_text):
 async def _book_free_slot(page, free_slot, message_text):
     """Click an already-located free slot element and complete the booking."""
     try:
+        log.info("  Clicking free slot...")
         await free_slot.click()
 
         try:
-            await page.wait_for_selector("div.modal-dialog", timeout=8000)
+            await page.wait_for_selector("div.modal-dialog", timeout=12000)
+            log.info("  Modal appeared")
         except PlaywrightTimeout:
+            log.info("  Modal timeout — retrying click")
             await free_slot.click()
             try:
-                await page.wait_for_selector("div.modal-dialog", timeout=5000)
+                await page.wait_for_selector("div.modal-dialog", timeout=8000)
+                log.info("  Modal appeared on retry")
             except PlaywrightTimeout:
+                log.info("  Modal never appeared — no_modal")
                 return "no_modal"
 
         msg_area = await page.query_selector("textarea[name='msg']")
