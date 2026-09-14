@@ -381,7 +381,15 @@ async def _book_free_slot(page, free_slot, message_text):
         triggered = await page.evaluate("""el => {
             try {
                 if (typeof calendarEventCallback === 'function') {
-                    calendarEventCallback.call(el, {target: el, currentTarget: el, type: 'click'});
+                    var evt = {
+                        target: el, currentTarget: el, type: 'click',
+                        preventDefault: function(){},
+                        stopPropagation: function(){},
+                        stopImmediatePropagation: function(){},
+                        isDefaultPrevented: function(){ return false; },
+                        isPropagationStopped: function(){ return false; }
+                    };
+                    calendarEventCallback.call(el, evt);
                     return 'calendarEventCallback_called';
                 }
                 // Fallback: find and call the jQuery handler directly
@@ -389,8 +397,11 @@ async def _book_free_slot(page, free_slot, message_text):
                 if (handlers && handlers.click) {
                     var fakeEvent = jQuery.Event('click');
                     fakeEvent.target = el;
+                    var fullFakeEvent = jQuery.Event('click');
+                    fullFakeEvent.target = el;
+                    fullFakeEvent.currentTarget = el;
                     handlers.click.forEach(function(h) {
-                        h.handler.call(el, fakeEvent);
+                        h.handler.call(el, fullFakeEvent);
                     });
                     return 'jquery_handler_called';
                 }
