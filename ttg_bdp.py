@@ -368,7 +368,10 @@ async def _book_free_slot(page, free_slot, message_text):
         log.info("  Clicking free slot...")
         await dismiss_cookie_banner(page)
         await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
-        await page.evaluate('el => el.click()', free_slot)
+        # Try clicking inner div first (FullCalendar event-inner), fall back to outer element
+        inner = await free_slot.query_selector("div.fc-event-inner")
+        target = inner if inner else free_slot
+        await target.click(force=True)
 
         try:
             await page.wait_for_selector("div.modal-dialog", timeout=12000)
