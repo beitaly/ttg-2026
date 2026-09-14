@@ -403,18 +403,40 @@ async def _book_free_slot(page, free_slot, message_text):
         }""", free_slot)
         log.info(f"  Click trigger result: {triggered}")
 
-        try:
-            await page.wait_for_selector("div.modal-dialog", timeout=12000)
-            log.info("  Modal appeared")
-        except PlaywrightTimeout:
-            log.info("  Modal timeout — retrying click")
-            await free_slot.click()
-            try:
-                await page.wait_for_selector("div.modal-dialog", timeout=8000)
-                log.info("  Modal appeared on retry")
-            except PlaywrightTimeout:
-                log.info("  Modal never appeared — no_modal")
-                return "no_modal"
+        # Wait for modal - try multiple selectors since it's a cloned modal
+        await asyncio.sleep(1)
+        modal_found = await page.evaluate("""() => {
+            // Check all possible modal locations
+            var selectors = ['.modal.in', '.modal.show', '#modal-dialog', '[id^=modal-dialog]', '.modal-dialog'];
+            for (var s of selectors) {
+                var el = document.querySelector(s);
+                if (el && el.offsetParent !== null) return s;
+            }
+            // Check if any modal is visible
+            var modals = document.querySelectorAll('.modal');
+            for (var m of modals) {
+                if (m.style.display === 'block' || m.classList.contains('in') || m.classList.contains('show')) {
+                    return 'modal:' + (m.id || m.className.substring(0,30));
+                }
+            }
+            return null;
+        }"""  )
+        if not modal_found:
+            await asyncio.sleep(1)
+            modal_found = await page.evaluate("""() => {
+                var modals = document.querySelectorAll('.modal');
+                for (var m of modals) {
+                    if (m.style.display === 'block' || m.classList.contains('in') || m.classList.contains('show')) {
+                        return 'modal:' + (m.id || 'unknown');
+                    }
+                }
+                return null;
+            }"""  )
+        if modal_found:
+            log.info(f"  Modal found: {modal_found}")
+        else:
+            log.info("  Modal never appeared — no_modal")
+            return "no_modal"
 
         msg_area = await page.query_selector("textarea[name='msg']")
         if msg_area:
