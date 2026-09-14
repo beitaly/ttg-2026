@@ -375,6 +375,10 @@ async def _book_free_slot(page, free_slot, message_text):
     """Click an already-located free slot element and complete the booking."""
     try:
         log.info("  Clicking free slot...")
+        await dismiss_cookie_banner(page)
+        await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
+        await page.evaluate("arguments => arguments[0].scrollIntoView()", free_slot)
+        await asyncio.sleep(0.3)
         await free_slot.click()
 
         try:
