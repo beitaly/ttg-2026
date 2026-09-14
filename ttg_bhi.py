@@ -205,7 +205,7 @@ async def scrape_buyers_by_segment(page):
                        f"?ragione_sociale_iniziale={letter}"
                        f"&categoria={categoria_val}&submit=1&page={page_num}")
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
                 except Exception as e:
                     log.warning(f"  Timeout {letter} p{page_num}: {e}")
                     break
@@ -333,27 +333,28 @@ async def scan_and_book(page, buyer, message_text):
     """
     target = buyer.get("appt_url") or (BASE_URL + "/ttg26/en/agenda-appuntamenti?user=" + buyer["id"])
     try:
-        await page.goto(target, wait_until="domcontentloaded", timeout=10000)
+        await page.goto(target, wait_until="domcontentloaded", timeout=15000)
         try:
             await page.wait_for_selector(
                 "div.fc-event.stato-libero, div.fc-event.stato-occupato, div.fc-event.stato-opzionato",
-                timeout=10000
+                timeout=12000
             )
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)  # wait for full calendar render including free slots
         except PlaywrightTimeout:
-            await page.goto(target, wait_until="domcontentloaded", timeout=10000)
+            await page.goto(target, wait_until="domcontentloaded", timeout=15000)
             try:
                 await page.wait_for_selector(
                     "div.fc-event.stato-libero, div.fc-event.stato-occupato, div.fc-event.stato-opzionato",
                     timeout=10000
                 )
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
             except PlaywrightTimeout:
                 return "no_calendar"
 
-        free_slot = await page.query_selector("div.fc-event.stato-libero")
-        if free_slot:
-            return await _book_free_slot(page, free_slot, message_text)
+        free_slots = await page.query_selector_all("div.fc-event.stato-libero")
+        log.info(f"  FREE SLOTS FOUND: {len(free_slots)}")
+        if free_slots:
+            return await _book_free_slot(page, free_slots[0], message_text)
 
         html = await page.content()
         locked_slots = extract_locked_slots_from_page_source(html)
