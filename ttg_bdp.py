@@ -368,14 +368,19 @@ async def _book_free_slot(page, free_slot, message_text):
         log.info("  Clicking free slot...")
         await dismiss_cookie_banner(page)
         await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
-        # Click via bounding box coordinates to trigger FullCalendar eventClick handler
-        bbox = await free_slot.bounding_box()
-        if bbox:
-            x = bbox["x"] + bbox["width"] / 2
-            y = bbox["y"] + bbox["height"] / 2
-            await page.mouse.click(x, y)
-        else:
-            await free_slot.click(force=True)
+        # Trigger FullCalendar eventClick by dispatching a mousedown+click on the element
+        await page.evaluate("""el => {
+            var rect = el.getBoundingClientRect();
+            var x = rect.left + rect.width / 2;
+            var y = rect.top + rect.height / 2;
+            ['mousedown','mouseup','click'].forEach(function(type) {
+                el.dispatchEvent(new MouseEvent(type, {
+                    bubbles: true, cancelable: true,
+                    clientX: x, clientY: y,
+                    view: window
+                }));
+            });
+        }""", free_slot)
 
         try:
             await page.wait_for_selector("div.modal-dialog", timeout=12000)
