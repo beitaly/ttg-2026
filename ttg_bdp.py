@@ -438,21 +438,41 @@ async def _book_free_slot(page, free_slot, message_text):
             log.info("  Modal never appeared — no_modal")
             return "no_modal"
 
-        msg_area = await page.query_selector("textarea[name='msg']")
-        if msg_area:
-            await msg_area.fill(message_text)
+        # Fill message and submit — scope to visible modal (cloned)
+        filled = await page.evaluate("""(msg) => {
+            var modal = null;
+            var modals = document.querySelectorAll('.modal');
+            for (var m of modals) {
+                if (m.style.display === 'block' || m.classList.contains('in') || m.classList.contains('show')) {
+                    modal = m; break;
+                }
+            }
+            if (!modal) return 'no_visible_modal';
+            var ta = modal.querySelector("textarea[name='msg']");
+            if (ta) { ta.value = msg; jQuery(ta).trigger('input').trigger('change'); }
+            return ta ? 'filled' : 'no_textarea';
+        }""", message_text)
+        log.info(f"  Fill result: {filled}")
 
-        submit = await page.query_selector(
-            "button[data-action='/ttg26/en/richiedi-appuntamento-ajax']"
-        )
-        if not submit:
-            return "no_submit"
+        clicked = await page.evaluate("""() => {
+            var modal = null;
+            var modals = document.querySelectorAll('.modal');
+            for (var m of modals) {
+                if (m.style.display === 'block' || m.classList.contains('in') || m.classList.contains('show')) {
+                    modal = m; break;
+                }
+            }
+            if (!modal) return 'no_visible_modal';
+            var btn = modal.querySelector("button[data-id='submit']") ||
+                      modal.querySelector("button[data-action]") ||
+                      modal.querySelector("button[type='submit']");
+            if (!btn) return 'no_button';
+            btn.click();
+            return 'clicked:' + (btn.getAttribute('data-action') || btn.textContent.trim().substring(0,30));
+        }"""  )
+        log.info(f"  Submit result: {clicked}")
 
-        await dismiss_cookie_banner(page)
-        await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
-        await submit.click()
-        await asyncio.sleep(2)
-
+        await asyncio.sleep(3)
         return "sent"
 
     except PlaywrightTimeout:
