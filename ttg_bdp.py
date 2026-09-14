@@ -368,19 +368,17 @@ async def _book_free_slot(page, free_slot, message_text):
         log.info("  Clicking free slot...")
         await dismiss_cookie_banner(page)
         await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
-        # Trigger FullCalendar eventClick by dispatching a mousedown+click on the element
+        # Scroll the element into view within its container, then click
         await page.evaluate("""el => {
-            var rect = el.getBoundingClientRect();
-            var x = rect.left + rect.width / 2;
-            var y = rect.top + rect.height / 2;
-            ['mousedown','mouseup','click'].forEach(function(type) {
-                el.dispatchEvent(new MouseEvent(type, {
-                    bubbles: true, cancelable: true,
-                    clientX: x, clientY: y,
-                    view: window
-                }));
-            });
+            // Scroll parent overflow container to make element visible
+            var parent = el.closest('.fc-scroller') || el.parentElement;
+            if (parent && parent.scrollHeight > parent.clientHeight) {
+                parent.scrollTop = el.offsetTop - parent.clientHeight / 2;
+            }
+            el.scrollIntoView({block: 'center', behavior: 'instant'});
         }""", free_slot)
+        await asyncio.sleep(0.5)
+        await free_slot.click()
 
         try:
             await page.wait_for_selector("div.modal-dialog", timeout=12000)
