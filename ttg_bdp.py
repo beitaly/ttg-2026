@@ -368,8 +368,27 @@ async def _book_free_slot(page, free_slot, message_text):
         log.info("  Clicking free slot...")
         await dismiss_cookie_banner(page)
         await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
-        # Trigger click via jQuery to fire FullCalendar eventClick handler
-        await page.evaluate("el => jQuery(el).trigger('click')", free_slot)
+        # Call FullCalendar calendarEventCallback directly
+        triggered = await page.evaluate("""el => {
+            try {
+                if (typeof calendarEventCallback === 'function') {
+                    calendarEventCallback.call(el, {target: el, currentTarget: el, type: 'click'});
+                    return 'calendarEventCallback_called';
+                }
+                // Fallback: find and call the jQuery handler directly
+                var handlers = jQuery._data(el, 'events');
+                if (handlers && handlers.click) {
+                    var fakeEvent = jQuery.Event('click');
+                    fakeEvent.target = el;
+                    handlers.click.forEach(function(h) {
+                        h.handler.call(el, fakeEvent);
+                    });
+                    return 'jquery_handler_called';
+                }
+                return 'no_handler_found';
+            } catch(e) { return 'error: ' + e.message; }
+        }""", free_slot)
+        log.info(f"  Click trigger result: {triggered}")
 
         try:
             await page.wait_for_selector("div.modal-dialog", timeout=12000)
