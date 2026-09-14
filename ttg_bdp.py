@@ -368,9 +368,7 @@ async def _book_free_slot(page, free_slot, message_text):
         log.info("  Clicking free slot...")
         await dismiss_cookie_banner(page)
         await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
-        await page.evaluate("arguments => arguments[0].scrollIntoView()", free_slot)
-        await asyncio.sleep(0.3)
-        await free_slot.click()
+        await page.evaluate('el => el.click()', free_slot)
 
         try:
             await page.wait_for_selector("div.modal-dialog", timeout=12000)
