@@ -368,35 +368,37 @@ async def _book_free_slot(page, free_slot, message_text):
         log.info("  Clicking free slot...")
         await dismiss_cookie_banner(page)
         await page.evaluate("document.getElementById('cc--main') && document.getElementById('cc--main').remove()")
-        # Call FullCalendar calendarEventCallback directly
+        # Call calendarEventCallback(event, jsEvent, view) with correct FullCalendar signature
         triggered = await page.evaluate("""el => {
             try {
-                if (typeof calendarEventCallback === 'function') {
-                    var evt = {
-                        target: el, currentTarget: el, type: 'click',
-                        preventDefault: function(){},
-                        stopPropagation: function(){},
-                        stopImmediatePropagation: function(){},
-                        isDefaultPrevented: function(){ return false; },
-                        isPropagationStopped: function(){ return false; }
-                    };
-                    calendarEventCallback.call(el, evt);
-                    return 'calendarEventCallback_called';
+                if (typeof calendarEventCallback !== 'function') return 'no_callback';
+                // Get the FullCalendar event object stored on the element
+                var calEvent = jQuery(el).data('fc-event-id') !== undefined
+                    ? null
+                    : null;
+                // Find event object via FullCalendar internal clientEvents
+                var cal = jQuery('#calendar');
+                var fcEvents = cal.fullCalendar('clientEvents');
+                // Match by element position/class
+                var rect = el.getBoundingClientRect();
+                var top = parseFloat(el.style.top);
+                var left = parseFloat(el.style.left);
+                var matchedEvent = null;
+                for (var i = 0; i < fcEvents.length; i++) {
+                    var ev = fcEvents[i];
+                    if (ev.stato === 'stato-libero') {
+                        matchedEvent = ev;
+                        break;
+                    }
                 }
-                // Fallback: find and call the jQuery handler directly
-                var handlers = jQuery._data(el, 'events');
-                if (handlers && handlers.click) {
-                    var fakeEvent = jQuery.Event('click');
-                    fakeEvent.target = el;
-                    var fullFakeEvent = jQuery.Event('click');
-                    fullFakeEvent.target = el;
-                    fullFakeEvent.currentTarget = el;
-                    handlers.click.forEach(function(h) {
-                        h.handler.call(el, fullFakeEvent);
-                    });
-                    return 'jquery_handler_called';
-                }
-                return 'no_handler_found';
+                if (!matchedEvent) return 'no_free_event_found';
+                var jsEvent = {
+                    preventDefault: function(){},
+                    stopPropagation: function(){},
+                    target: el, currentTarget: el, type: 'click'
+                };
+                calendarEventCallback(matchedEvent, jsEvent, null);
+                return 'called_with_event:' + matchedEvent.slot;
             } catch(e) { return 'error: ' + e.message; }
         }""", free_slot)
         log.info(f"  Click trigger result: {triggered}")
