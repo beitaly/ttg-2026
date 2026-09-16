@@ -1,9 +1,9 @@
 """
 TTG 2026 — Best Holidays in Italy
-Standalone Buyer Scrape Script v3
+Standalone Buyer Scrape Script v4
 
-Phase 1: scrapes all buyer IDs, names and segments from listing pages
-Phase 2: visits each buyer's diary page to extract full profile details
+Phase 1: scrapes all buyer IDs, names from listing pages
+Phase 2: visits each buyer's profile page to extract full details
 Output: ttg_buyers_full.csv
 """
 
@@ -102,28 +102,37 @@ async def scrape_listings(page):
                             continue
                         buyer_id = m.group(1)
                         if buyer_id in seen_ids:
-                            for b in all_buyers:
-                                if b["id"] == buyer_id and seg_label not in b["segments"]:
-                                    b["segments"] += f", {seg_label}"
-                                    break
                             continue
                         seen_ids.add(buyer_id)
                         seg_new += 1
                         diary_url = BASE_URL + href if href.startswith("/") else href
                         all_buyers.append({
-                            "id":        buyer_id,
-                            "company":   company,
-                            "segments":  seg_label,
-                            "diary_url": diary_url,
-                            "country":   "",
-                            "contact":   "",
-                            "website":   "",
-                            "address":   "",
+                            "id":                    buyer_id,
+                            "company":               company,
+                            "diary_url":             diary_url,
+                            "contact":               "",
+                            "country":               "",
+                            "website":               "",
+                            "address":               "",
+                            "type_of_business":      "",
+                            "product_category":      "",
+                            "sector":                "",
+                            "type_of_product":       "",
+                            "type_of_booking":       "",
+                            "trade_sector":          "",
+                            "activities_services":   "",
+                            "geo_areas":             "",
+                            "destinations":          "",
+                            "market_segments":       "",
+                            "business_volume":       "",
+                            "yearly_visitors":       "",
+                            "employees":             "",
+                            "years_operating":       "",
+                            "exhibitions":           "",
                         })
                     except Exception:
                         pass
 
-                # Pagination
                 next_btn = await page.query_selector("ul.pagination li.last a")
                 if next_btn:
                     next_href = await next_btn.get_attribute("href") or ""
@@ -137,7 +146,7 @@ async def scrape_listings(page):
             log.info(f"  {letter}: {seg_new} in {seg_label}")
             await asyncio.sleep(0.2)
 
-        log.info(f"Segment '{seg_label}' complete: {seg_new} buyers")
+        log.info(f"Segment '{seg_label}' complete")
 
     log.info(f"Total unique buyers: {len(all_buyers)}")
     return all_buyers
@@ -147,7 +156,6 @@ async def scrape_listings(page):
 async def enrich_profiles(page, buyers):
     total = len(buyers)
     for i, buyer in enumerate(buyers):
-        # Periodic re-login
         if i > 0 and i % 50 == 0:
             log.info(f"  [{i}/{total}] Re-logging in...")
             try:
@@ -160,58 +168,105 @@ async def enrich_profiles(page, buyers):
             await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
             await dismiss_cookie_banner(page)
 
-            # Extract all data via JS to avoid selector fragility
             data = await page.evaluate("""() => {
-                var result = {contact: '', country: '', website: '', address: ''};
+                var result = {};
 
-                // Contact: "Buyer attending: Name"
-                var header = document.querySelector('p.buyer-attending, span.buyer-attending, .scheda-buyer p');
-                if (!header) header = document.querySelector('header p, .profile-header p');
-                if (header) {
-                    result.contact = header.innerText.replace(/Buyer attending:\\s*/i, '').trim();
+                // Contact name
+                var contactEl = document.querySelector('p.buyer-attending, .buyer-attending');
+                if (!contactEl) {
+                    // Look for "Buyer attending:" text
+                    var allP = document.querySelectorAll('p, span');
+                    for (var el of allP) {
+                        if (el.children.length === 0 && /buyer attending/i.test(el.innerText)) {
+                            contactEl = el; break;
+                        }
+                    }
                 }
+                result.contact = contactEl
+                    ? contactEl.innerText.replace(/Buyer attending:\\s*/i, '').trim()
+                    : '';
 
-                // Website: first external link in profile area
-                var links = document.querySelectorAll('a[href^="http"]');
+                // Website
+                var links = document.querySelectorAll('a[href^="http"], a[href^="www"]');
                 for (var l of links) {
                     var href = l.getAttribute('href') || '';
-                    if (href && !href.includes('bme.iegexpo') && !href.includes('javascript')) {
+                    if (href && !href.includes('bme.iegexpo') && !href.includes('javascript')
+                        && !href.includes('cookieconsent') && href.length > 5) {
                         result.website = href;
                         break;
                     }
                 }
 
-                // Address & country: from location/address block
-                var addrEl = document.querySelector('address, .buyer-address, .user-details');
-                if (!addrEl) addrEl = document.querySelector('.scheda-buyer address, section address');
+                // Address block
+                var addrEl = document.querySelector('address, .buyer-address');
+                if (!addrEl) {
+                    // Try finding the location pin icon area
+                    var icon = document.querySelector('i.fa-map-marker, i.fa-location, .glyphicon-map-marker');
+                    if (icon) addrEl = icon.closest('li, div, p');
+                }
                 if (addrEl) {
-                    var txt = addrEl.innerText.trim();
-                    var lines = txt.split('\\n').map(l => l.trim()).filter(l => l);
+                    var lines = addrEl.innerText.trim().split('\\n').map(l => l.trim()).filter(l => l);
                     result.address = lines.join(', ');
-                    // Last line is usually the country
-                    if (lines.length > 0) result.country = lines[lines.length - 1];
+                    result.country = lines.length > 0 ? lines[lines.length - 1] : '';
                 }
 
-                // Fallback for contact from any "Buyer attending" text
-                if (!result.contact) {
-                    var all = document.querySelectorAll('p, span, div');
-                    for (var el of all) {
-                        if (el.children.length === 0 && /buyer attending/i.test(el.innerText)) {
-                            result.contact = el.innerText.replace(/Buyer attending:\\s*/i, '').trim();
-                            break;
-                        }
+                // Profile table — extract all key/value pairs
+                var profileData = {};
+                var rows = document.querySelectorAll('.profile table tr, table.profile tr, .scheda-buyer table tr');
+                if (!rows.length) rows = document.querySelectorAll('table tr');
+                rows.forEach(function(row) {
+                    var cells = row.querySelectorAll('td, th');
+                    if (cells.length >= 2) {
+                        var key = cells[0].innerText.trim().toLowerCase();
+                        var val = cells[1].innerText.trim();
+                        profileData[key] = val;
                     }
-                }
+                });
 
+                // Also try dt/dd pairs
+                var dts = document.querySelectorAll('dt');
+                dts.forEach(function(dt) {
+                    var dd = dt.nextElementSibling;
+                    if (dd && dd.tagName === 'DD') {
+                        profileData[dt.innerText.trim().toLowerCase()] = dd.innerText.trim();
+                    }
+                });
+
+                result.profileData = profileData;
                 return result;
             }""")
 
             buyer["contact"] = data.get("contact", "")
-            buyer["country"] = data.get("country", "")
             buyer["website"] = data.get("website", "")
             buyer["address"] = data.get("address", "")
+            buyer["country"] = data.get("country", "")
 
-            log.info(f"BUYER_DETAIL|{buyer['id']}|{buyer['company']}|{buyer['country']}|{buyer['segments']}|{buyer['contact']}|||{buyer['website']}|{buyer['address']}")
+            # Map profile fields
+            pd = data.get("profileData", {})
+            def get(keys):
+                for k in keys:
+                    for pk, pv in pd.items():
+                        if k.lower() in pk:
+                            return pv
+                return ""
+
+            buyer["type_of_business"]    = get(["type of business"])
+            buyer["product_category"]    = get(["product category"])
+            buyer["sector"]              = get(["sector"])
+            buyer["type_of_product"]     = get(["type of product"])
+            buyer["type_of_booking"]     = get(["type of booking"])
+            buyer["trade_sector"]        = get(["requested trade sector", "trade sector"])
+            buyer["activities_services"] = get(["requested activities", "activities and services"])
+            buyer["geo_areas"]           = get(["geographical areas are included", "geographical areas of interest"])
+            buyer["destinations"]        = get(["destinations of interest", "destination"])
+            buyer["market_segments"]     = get(["market segments"])
+            buyer["business_volume"]     = get(["volume of your business", "business volume"])
+            buyer["yearly_visitors"]     = get(["yearly visitors", "visitors to italy"])
+            buyer["employees"]           = get(["number of employees"])
+            buyer["years_operating"]     = get(["years has your company"])
+            buyer["exhibitions"]         = get(["tourism exhibitions"])
+
+            log.info(f"[{i+1}/{total}] {buyer['company']} | {buyer['country']} | {buyer['trade_sector'] or buyer['type_of_business']}")
 
         except Exception as e:
             log.warning(f"  [{i+1}/{total}] Failed for {buyer['company']}: {e}")
@@ -223,7 +278,7 @@ async def enrich_profiles(page, buyers):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    log.info(f"BHI Full Scrape v3 started at {datetime.now(CET).isoformat()}")
+    log.info(f"BHI Full Scrape v4 started at {datetime.now(CET).isoformat()}")
 
     if not AUTOLOGIN_URL:
         log.error("BHI_AUTOLOGIN_URL not set — exiting")
@@ -241,20 +296,24 @@ async def main():
             await browser.close()
             return
 
-        # Phase 1
         buyers = await scrape_listings(page)
 
-        # Phase 2
         log.info(f"Enriching {len(buyers)} buyer profiles...")
         buyers = await enrich_profiles(page, buyers)
 
         await browser.close()
 
-    # Write CSV
     if buyers:
-        fieldnames = ["id", "company", "country", "segments", "contact", "website", "address", "diary_url"]
+        fieldnames = [
+            "id", "company", "country", "contact", "website", "address",
+            "trade_sector", "type_of_business", "product_category", "sector",
+            "type_of_product", "type_of_booking", "activities_services",
+            "geo_areas", "destinations", "market_segments",
+            "business_volume", "yearly_visitors", "employees",
+            "years_operating", "exhibitions", "diary_url"
+        ]
         with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(buyers)
         log.info(f"CSV written: {OUTPUT_CSV} ({len(buyers)} rows)")
