@@ -1,12 +1,10 @@
 """
 TTG 2026 — Best Holidays in Italy
-Standalone Buyer Scrape Script v2
+Standalone Buyer Scrape Script v3
 
-Scrapes all buyers across all segments from listing pages,
-then visits each individual profile page to collect full details:
-company, country, contact, website, address, diary URL.
-
-Output: ttg_buyers_full.csv in working directory.
+Phase 1: scrapes all buyer IDs, names and segments from listing pages
+Phase 2: visits each buyer's diary page to extract full profile details
+Output: ttg_buyers_full.csv
 """
 
 import asyncio
@@ -19,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 
 BASE_URL      = "https://bme.iegexpo.it"
 AUTOLOGIN_URL = os.environ.get("BHI_AUTOLOGIN_URL", "")
@@ -44,7 +42,7 @@ handler.setFormatter(logging.Formatter("%(asctime)s [INFO] %(message)s", datefmt
 logging.basicConfig(level=logging.INFO, handlers=[handler])
 log = logging.getLogger(__name__)
 
-# ── Cookie banner ─────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def dismiss_cookie_banner(page):
     try:
@@ -59,16 +57,22 @@ async def dismiss_cookie_banner(page):
     except Exception:
         pass
 
-# ── Phase 1: scrape listing pages ─────────────────────────────────────────────
+async def login(page):
+    await page.goto(AUTOLOGIN_URL, wait_until="domcontentloaded", timeout=15000)
+    if "default" not in page.url:
+        raise RuntimeError(f"Login failed — URL: {page.url}")
+    await dismiss_cookie_banner(page)
+    log.info("Login successful")
+
+# ── Phase 1: listing pages ────────────────────────────────────────────────────
 
 async def scrape_listings(page):
-    """Collect buyer IDs, names and segments from search listing pages."""
     all_buyers = []
     seen_ids   = set()
 
     for seg_label, categoria_val in SEGMENT_CATEGORIES:
         log.info(f"Listing: {seg_label} (categoria={categoria_val})")
-        seg_count = 0
+        seg_new = 0
 
         for letter in LETTERS:
             page_num = 1
@@ -77,9 +81,9 @@ async def scrape_listings(page):
                        f"?ragione_sociale_iniziale={letter}"
                        f"&categoria={categoria_val}&submit=1&page={page_num}")
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=12000)
                 except Exception as e:
-                    log.warning(f"  Page load failed {letter} p{page_num}: {e}")
+                    log.warning(f"  Load failed {letter} p{page_num}: {e}")
                     break
 
                 entries = await page.query_selector_all("li.search-result")
@@ -91,127 +95,135 @@ async def scrape_listings(page):
                         link = await entry.query_selector("h4 a[href*='agenda-appuntamenti']")
                         if not link:
                             continue
-                        href      = await link.get_attribute("href")
-                        company   = (await link.inner_text()).strip()
-                        uid_match = re.search(r"user=([0-9]+)", href or "")
-                        if not uid_match:
+                        href     = await link.get_attribute("href")
+                        company  = (await link.inner_text()).strip()
+                        m        = re.search(r"user=([0-9]+)", href or "")
+                        if not m:
                             continue
-                        buyer_id = uid_match.group(1)
+                        buyer_id = m.group(1)
                         if buyer_id in seen_ids:
-                            # Add segment to existing buyer
                             for b in all_buyers:
-                                if b["id"] == buyer_id:
-                                    if seg_label not in b["segments"]:
-                                        b["segments"] += f", {seg_label}"
+                                if b["id"] == buyer_id and seg_label not in b["segments"]:
+                                    b["segments"] += f", {seg_label}"
                                     break
                             continue
                         seen_ids.add(buyer_id)
-                        seg_count += 1
+                        seg_new += 1
                         diary_url = BASE_URL + href if href.startswith("/") else href
                         all_buyers.append({
-                            "id":       buyer_id,
-                            "company":  company,
-                            "segments": seg_label,
+                            "id":        buyer_id,
+                            "company":   company,
+                            "segments":  seg_label,
                             "diary_url": diary_url,
-                            "country":  "",
-                            "contact":  "",
-                            "website":  "",
-                            "address":  "",
+                            "country":   "",
+                            "contact":   "",
+                            "website":   "",
+                            "address":   "",
                         })
-                    except Exception as e:
-                        log.debug(f"Entry parse error: {e}")
+                    except Exception:
+                        pass
 
-                next_link = await page.query_selector("ul.pagination li.last a")
-                if next_link:
-                    next_href = await next_link.get_attribute("href") or ""
-                    if "page=" + str(page_num) in next_href:
+                # Pagination
+                next_btn = await page.query_selector("ul.pagination li.last a")
+                if next_btn:
+                    next_href = await next_btn.get_attribute("href") or ""
+                    if f"page={page_num}" in next_href:
                         break
                     page_num += 1
                 else:
                     break
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
 
-            log.info(f"  {letter}: {seg_count} in {seg_label}")
+            log.info(f"  {letter}: {seg_new} in {seg_label}")
             await asyncio.sleep(0.2)
 
-        log.info(f"Segment '{seg_label}': {seg_count} buyers")
+        log.info(f"Segment '{seg_label}' complete: {seg_new} buyers")
 
-    log.info(f"Total unique buyers from listings: {len(all_buyers)}")
+    log.info(f"Total unique buyers: {len(all_buyers)}")
     return all_buyers
 
-
-# ── Phase 2: visit each profile page ─────────────────────────────────────────
+# ── Phase 2: profile enrichment ───────────────────────────────────────────────
 
 async def enrich_profiles(page, buyers):
-    """Visit each buyer's diary/profile page to extract full details."""
     total = len(buyers)
     for i, buyer in enumerate(buyers):
+        # Periodic re-login
         if i > 0 and i % 50 == 0:
             log.info(f"  [{i}/{total}] Re-logging in...")
             try:
-                await page.goto(AUTOLOGIN_URL, wait_until="domcontentloaded", timeout=15000)
-                await dismiss_cookie_banner(page)
+                await login(page)
             except Exception as e:
                 log.warning(f"  Re-login failed: {e}")
 
-        profile_url = (BASE_URL + f"/ttg26/en/agenda-appuntamenti?user={buyer['id']}")
+        profile_url = f"{BASE_URL}/ttg26/en/agenda-appuntamenti?user={buyer['id']}"
         try:
             await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
             await dismiss_cookie_banner(page)
 
-            # Country — from location block
-            loc = await page.query_selector("li div")
-            country = ""
-            if loc:
-                loc_text = (await loc.inner_text()).strip()
-                # Last non-empty line is usually country
-                lines = [l.strip() for l in loc_text.split("\n") if l.strip()]
-                if lines:
-                    country = lines[-1]
+            # Extract all data via JS to avoid selector fragility
+            data = await page.evaluate("""() => {
+                var result = {contact: '', country: '', website: '', address: ''};
 
-            # Contact name — from span under header
-            contact_el = await page.query_selector("header span")
-            contact = ""
-            if contact_el:
-                contact = (await contact_el.inner_text()).strip()
-                # Remove "Buyer attending: " prefix if present
-                contact = re.sub(r"^Buyer attending:\s*", "", contact).strip()
+                // Contact: "Buyer attending: Name"
+                var header = document.querySelector('p.buyer-attending, span.buyer-attending, .scheda-buyer p');
+                if (!header) header = document.querySelector('header p, .profile-header p');
+                if (header) {
+                    result.contact = header.innerText.replace(/Buyer attending:\\s*/i, '').trim();
+                }
 
-            # Website
-            website_el = await page.query_selector("a[href^='http']:not([href*='bme.iegexpo'])")
-            website = ""
-            if website_el:
-                website = (await website_el.get_attribute("href") or "").strip()
+                // Website: first external link in profile area
+                var links = document.querySelectorAll('a[href^="http"]');
+                for (var l of links) {
+                    var href = l.getAttribute('href') || '';
+                    if (href && !href.includes('bme.iegexpo') && !href.includes('javascript')) {
+                        result.website = href;
+                        break;
+                    }
+                }
 
-            # Address — from user-details li div
-            address_els = await page.query_selector_all("ul.user-details li div")
-            address = ""
-            for el in address_els:
-                txt = (await el.inner_text()).strip()
-                # Skip if it looks like a URL
-                if txt and "http" not in txt and len(txt) > 5:
-                    address = txt.replace("\n", ", ")
-                    break
+                // Address & country: from location/address block
+                var addrEl = document.querySelector('address, .buyer-address, .user-details');
+                if (!addrEl) addrEl = document.querySelector('.scheda-buyer address, section address');
+                if (addrEl) {
+                    var txt = addrEl.innerText.trim();
+                    var lines = txt.split('\\n').map(l => l.trim()).filter(l => l);
+                    result.address = lines.join(', ');
+                    // Last line is usually the country
+                    if (lines.length > 0) result.country = lines[lines.length - 1];
+                }
 
-            buyer["country"] = country
-            buyer["contact"] = contact
-            buyer["website"] = website
-            buyer["address"] = address
+                // Fallback for contact from any "Buyer attending" text
+                if (!result.contact) {
+                    var all = document.querySelectorAll('p, span, div');
+                    for (var el of all) {
+                        if (el.children.length === 0 && /buyer attending/i.test(el.innerText)) {
+                            result.contact = el.innerText.replace(/Buyer attending:\\s*/i, '').trim();
+                            break;
+                        }
+                    }
+                }
 
-            log.info(f"BUYER_DETAIL|{buyer['id']}|{buyer['company']}|{country}|{buyer['segments']}|{contact}|||{website}|{address}")
+                return result;
+            }""")
+
+            buyer["contact"] = data.get("contact", "")
+            buyer["country"] = data.get("country", "")
+            buyer["website"] = data.get("website", "")
+            buyer["address"] = data.get("address", "")
+
+            log.info(f"BUYER_DETAIL|{buyer['id']}|{buyer['company']}|{buyer['country']}|{buyer['segments']}|{buyer['contact']}|||{buyer['website']}|{buyer['address']}")
 
         except Exception as e:
-            log.warning(f"  [{i+1}/{total}] Profile fetch failed for {buyer['company']}: {e}")
+            log.warning(f"  [{i+1}/{total}] Failed for {buyer['company']}: {e}")
 
         await asyncio.sleep(0.5)
 
     return buyers
 
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    log.info(f"BHI Full Scrape v2 started at {datetime.now(CET).isoformat()}")
+    log.info(f"BHI Full Scrape v3 started at {datetime.now(CET).isoformat()}")
 
     if not AUTOLOGIN_URL:
         log.error("BHI_AUTOLOGIN_URL not set — exiting")
@@ -222,19 +234,17 @@ async def main():
         page    = await browser.new_page()
 
         log.info("Logging in...")
-        await page.goto(AUTOLOGIN_URL, wait_until="domcontentloaded", timeout=15000)
-        log.info(f"Post-autologin URL: {page.url}")
-        if "default" not in page.url:
-            log.error("Login failed — check BHI_AUTOLOGIN_URL")
+        try:
+            await login(page)
+        except Exception as e:
+            log.error(f"Login failed: {e}")
             await browser.close()
             return
-        await dismiss_cookie_banner(page)
-        log.info("Login successful")
 
-        # Phase 1: listing pages
+        # Phase 1
         buyers = await scrape_listings(page)
 
-        # Phase 2: individual profile pages
+        # Phase 2
         log.info(f"Enriching {len(buyers)} buyer profiles...")
         buyers = await enrich_profiles(page, buyers)
 
