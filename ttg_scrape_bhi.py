@@ -168,6 +168,18 @@ async def enrich_profiles(page, buyers):
             await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
             await dismiss_cookie_banner(page)
 
+            # Expand the PROFILE section if collapsed
+            try:
+                profile_toggle = await page.query_selector("a[href='#profile'], .profile-toggle, [data-toggle='collapse'][href*='profile'], a:has-text('PROFILE')")
+                if profile_toggle:
+                    await profile_toggle.click()
+                    await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+            # Wait for profile table to appear
+            await asyncio.sleep(1)
+
             data = await page.evaluate("""() => {
                 var result = {};
 
@@ -210,20 +222,19 @@ async def enrich_profiles(page, buyers):
                     result.country = lines.length > 0 ? lines[lines.length - 1] : '';
                 }
 
-                // Profile table — extract all key/value pairs
+                // Profile table — extract all key/value pairs from any table on the page
                 var profileData = {};
-                var rows = document.querySelectorAll('.profile table tr, table.profile tr, .scheda-buyer table tr');
-                if (!rows.length) rows = document.querySelectorAll('table tr');
+                var rows = document.querySelectorAll('table tr');
                 rows.forEach(function(row) {
-                    var cells = row.querySelectorAll('td, th');
+                    var cells = row.querySelectorAll('td');
                     if (cells.length >= 2) {
                         var key = cells[0].innerText.trim().toLowerCase();
-                        var val = cells[1].innerText.trim();
-                        profileData[key] = val;
+                        var val = cells[cells.length - 1].innerText.trim();
+                        if (key && val) profileData[key] = val;
                     }
                 });
 
-                // Also try dt/dd pairs
+                // Also try definition lists
                 var dts = document.querySelectorAll('dt');
                 dts.forEach(function(dt) {
                     var dd = dt.nextElementSibling;
@@ -231,6 +242,16 @@ async def enrich_profiles(page, buyers):
                         profileData[dt.innerText.trim().toLowerCase()] = dd.innerText.trim();
                     }
                 });
+
+                // Try label/value divs
+                var labels = document.querySelectorAll('.label, .field-label, .profile-label');
+                labels.forEach(function(lbl) {
+                    var val = lbl.nextElementSibling;
+                    if (val) profileData[lbl.innerText.trim().toLowerCase()] = val.innerText.trim();
+                });
+
+                // Log what we found for debugging
+                result.profileKeys = Object.keys(profileData).join(', ');
 
                 result.profileData = profileData;
                 return result;
@@ -266,7 +287,8 @@ async def enrich_profiles(page, buyers):
             buyer["years_operating"]     = get(["years has your company"])
             buyer["exhibitions"]         = get(["tourism exhibitions"])
 
-            log.info(f"[{i+1}/{total}] {buyer['company']} | {buyer['country']} | {buyer['trade_sector'] or buyer['type_of_business']}")
+            profile_keys = data.get("profileKeys", "")
+            log.info(f"[{i+1}/{total}] {buyer['company']} | {buyer['country']} | {buyer['trade_sector'] or buyer['type_of_business']} | keys: {profile_keys[:80]}")
 
         except Exception as e:
             log.warning(f"  [{i+1}/{total}] Failed for {buyer['company']}: {e}")
