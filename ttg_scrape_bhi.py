@@ -168,92 +168,65 @@ async def enrich_profiles(page, buyers):
             await page.goto(profile_url, wait_until="domcontentloaded", timeout=12000)
             await dismiss_cookie_banner(page)
 
-            # Expand the PROFILE section if collapsed
+            # Click the PROFILE link to trigger AJAX load
             try:
-                profile_toggle = await page.query_selector("a[href='#profile'], .profile-toggle, [data-toggle='collapse'][href*='profile'], a:has-text('PROFILE')")
-                if profile_toggle:
-                    await profile_toggle.click()
-                    await asyncio.sleep(0.5)
-            except Exception:
-                pass
-
-            # Wait for profile table to appear
-            await asyncio.sleep(1)
+                profile_link = await page.query_selector("a[href='#dati-pubblici-profilazione']")
+                if profile_link:
+                    await profile_link.click()
+                    # Wait for AJAX to replace the loader with actual content
+                    await page.wait_for_function(
+                        "document.querySelector('#dati-pubblici-profilazione .panel-body') && "
+                        "!document.querySelector('#dati-pubblici-profilazione img')",
+                        timeout=8000
+                    )
+            except Exception as e:
+                log.debug(f"  Profile click failed: {e}")
 
             data = await page.evaluate("""() => {
                 var result = {};
 
-                // Contact name
-                var contactEl = document.querySelector('p.buyer-attending, .buyer-attending');
-                if (!contactEl) {
-                    // Look for "Buyer attending:" text
-                    var allP = document.querySelectorAll('p, span');
-                    for (var el of allP) {
-                        if (el.children.length === 0 && /buyer attending/i.test(el.innerText)) {
-                            contactEl = el; break;
-                        }
+                // Contact name — "Buyer attending: Name"
+                var allEls = document.querySelectorAll('p, span, div');
+                for (var el of allEls) {
+                    if (el.children.length === 0 && /buyer attending/i.test(el.innerText)) {
+                        result.contact = el.innerText.replace(/Buyer attending:\\s*/i, '').trim();
+                        break;
                     }
                 }
-                result.contact = contactEl
-                    ? contactEl.innerText.replace(/Buyer attending:\\s*/i, '').trim()
-                    : '';
 
-                // Website
+                // Website — first external link
                 var links = document.querySelectorAll('a[href^="http"], a[href^="www"]');
                 for (var l of links) {
                     var href = l.getAttribute('href') || '';
-                    if (href && !href.includes('bme.iegexpo') && !href.includes('javascript')
-                        && !href.includes('cookieconsent') && href.length > 5) {
+                    if (href && !href.includes('bme.iegexpo') && !href.includes('javascript') && href.length > 5) {
                         result.website = href;
                         break;
                     }
                 }
 
-                // Address block
+                // Address & country — from location block
                 var addrEl = document.querySelector('address, .buyer-address');
-                if (!addrEl) {
-                    // Try finding the location pin icon area
-                    var icon = document.querySelector('i.fa-map-marker, i.fa-location, .glyphicon-map-marker');
-                    if (icon) addrEl = icon.closest('li, div, p');
-                }
                 if (addrEl) {
                     var lines = addrEl.innerText.trim().split('\\n').map(l => l.trim()).filter(l => l);
                     result.address = lines.join(', ');
                     result.country = lines.length > 0 ? lines[lines.length - 1] : '';
                 }
 
-                // Profile table — extract all key/value pairs from any table on the page
+                // Profile data — from AJAX-loaded #dati-pubblici-profilazione
                 var profileData = {};
-                var rows = document.querySelectorAll('table tr');
+                var rows = document.querySelectorAll('#dati-pubblici-profilazione .col-md-12');
                 rows.forEach(function(row) {
-                    var cells = row.querySelectorAll('td');
-                    if (cells.length >= 2) {
-                        var key = cells[0].innerText.trim().toLowerCase();
-                        var val = cells[cells.length - 1].innerText.trim();
+                    var label = row.querySelector('.col-md-3, .text-right');
+                    var value = row.querySelector('.col-md-9, .col-md-6');
+                    if (label && value) {
+                        var key = label.innerText.trim().toLowerCase();
+                        var val = value.innerText.trim();
                         if (key && val) profileData[key] = val;
                     }
                 });
 
-                // Also try definition lists
-                var dts = document.querySelectorAll('dt');
-                dts.forEach(function(dt) {
-                    var dd = dt.nextElementSibling;
-                    if (dd && dd.tagName === 'DD') {
-                        profileData[dt.innerText.trim().toLowerCase()] = dd.innerText.trim();
-                    }
-                });
-
-                // Try label/value divs
-                var labels = document.querySelectorAll('.label, .field-label, .profile-label');
-                labels.forEach(function(lbl) {
-                    var val = lbl.nextElementSibling;
-                    if (val) profileData[lbl.innerText.trim().toLowerCase()] = val.innerText.trim();
-                });
-
-                // Log what we found for debugging
-                result.profileKeys = Object.keys(profileData).join(', ');
-
                 result.profileData = profileData;
+                result.profileKeys = Object.keys(profileData).join(', ');
                 return result;
             }""")
 
